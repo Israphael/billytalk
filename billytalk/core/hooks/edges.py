@@ -148,7 +148,17 @@ class EdgeLogic:
             )
         self._keys_down.add(CODE_ESC)
 
-        if self._last_esc_ms is not None and now_ms - self._last_esc_ms <= ESC_WINDOW_MS:
+        # Wrap-aware: now_ms is MSLLHOOKSTRUCT.time, a DWORD tick that wraps
+        # every 49.7 days. A raw subtraction across the wrap goes hugely
+        # negative and would read as "within the window" — a phantom double
+        # Esc once every seven weeks of uptime. Masked, the wrapped delta is
+        # hugely positive and correctly reads as "expired".
+        elapsed = (
+            (now_ms - self._last_esc_ms) & 0xFFFF_FFFF
+            if self._last_esc_ms is not None
+            else None
+        )
+        if elapsed is not None and elapsed <= ESC_WINDOW_MS:
             self._last_esc_ms = None
             # The second press of a pair. Swallow it only while recording ("Esc
             # only during dictation") — the first one already reached the

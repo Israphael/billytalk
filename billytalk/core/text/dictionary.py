@@ -61,26 +61,28 @@ class Dictionary:
 
     def __init__(self, rules: tuple[Rule, ...] | list[Rule] = DEFAULT_RULES) -> None:
         self.rules: tuple[Rule, ...] = tuple(rules)
-        # Longest alternative first across all rules (spec §7). Compiled once:
-        # apply() runs on every dictation and must not pay re.compile each time.
-        ordered = sorted(
-            (rule for rule in self.rules if rule.enabled),
-            key=lambda rule: max((len(a) for a in rule.alternatives()), default=0),
-            reverse=True,
-        )
-        self._compiled: list[tuple[re.Pattern[str], str]] = []
-        for rule in ordered:
-            alternatives = rule.alternatives()
-            if not alternatives:
-                continue
-            body = "|".join(re.escape(alt) for alt in alternatives)
-            # (?<!\w)…(?!\w) rather than \b: correct even when the pattern starts
-            # or ends with a character \b classes as non-word, and explicit
-            # UNICODE per the harness §13 trap list.
-            pattern = re.compile(
-                rf"(?<!\w)(?:{body})(?!\w)", re.IGNORECASE | re.UNICODE
+        # "Longer before shorter" (spec §7) holds across ALTERNATIVES globally,
+        # not across rules: ordering whole rules by their longest alternative
+        # lets a rule's short alternative fire before another rule's longer one
+        # ("x" beating "x y") and eat its match. Flattened, every spelling
+        # competes at its own length. Compiled once — apply() runs per dictation.
+        flattened: list[tuple[str, str]] = [
+            (alt, rule.repl)
+            for rule in self.rules
+            if rule.enabled
+            for alt in rule.alternatives()
+        ]
+        flattened.sort(key=lambda pair: len(pair[0]), reverse=True)
+        self._compiled: list[tuple[re.Pattern[str], str]] = [
+            # (?<!\w)…(?!\w) rather than \b: correct even when the pattern
+            # starts or ends with a character \b classes as non-word, and
+            # explicit UNICODE per the harness §13 trap list.
+            (
+                re.compile(rf"(?<!\w){re.escape(alt)}(?!\w)", re.IGNORECASE | re.UNICODE),
+                repl,
             )
-            self._compiled.append((pattern, rule.repl))
+            for alt, repl in flattened
+        ]
 
     def apply(self, text: str) -> str:
         """Replace every match of every enabled rule, longer rules first.

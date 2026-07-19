@@ -589,8 +589,15 @@ class Driver:
 
     def enqueue_startup_pending(self) -> int:
         """Spec §3: rows the last run never finished go back to the queue.
-        Returns how many — the "N записей ждут расшифровки" number."""
+        Returns how many — the "N записей ждут расшифровки" number.
+
+        A non-empty queue is evidence of a past outage the gate cannot
+        remember across a restart, so cleanup starts paused: the first
+        successful retry reopens it through the usual ten-minute delay —
+        exactly the spec's resumption rule, now surviving a restart too."""
         pending = self.deps.store.pending_at_startup()
+        if pending:
+            self.deps.gate.network_lost()
         for row in pending:
             self._schedule_retry(
                 _RetryItem(

@@ -107,3 +107,15 @@ def test_schema_from_the_future_is_refused() -> None:
     conn.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
     with pytest.raises(SchemaTooNew):
         ensure_schema(conn)
+
+
+def test_version_stamp_is_the_final_statement_of_the_ddl() -> None:
+    """A script interrupted mid-way must leave version 0 so the next start
+    re-runs the DDL. Stamped first, a half-created schema reads as version 1
+    and is never repaired (review round 1)."""
+    from billytalk.core.store.db import DDL
+
+    stamp = DDL.rindex("PRAGMA user_version")
+    assert stamp > DDL.rindex("CREATE TABLE")
+    assert stamp > DDL.rindex("CREATE TRIGGER")
+    assert stamp > DDL.rindex("CREATE INDEX")

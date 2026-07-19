@@ -40,6 +40,21 @@ def test_longer_rules_apply_before_shorter() -> None:
         assert d.apply("возьми впс премиум и впс") == "возьми VPS Premium и VPS"
 
 
+def test_short_alternative_does_not_shadow_another_rules_longer_one() -> None:
+    """Ordering whole rules by their longest alternative let a rule's SHORT
+    alternative fire before another rule's longer spelling and eat its match
+    (review round 1). Alternatives compete globally at their own length."""
+    rules = [
+        Rule("normalize", "экс игрек зет|икс", "X"),  # longest alt is long, "икс" is short
+        Rule("normalize", "икс лучи", "рентген"),
+    ]
+    for ordering in (rules, rules[::-1]):
+        d = Dictionary(ordering)
+        assert d.apply("сделай икс лучи") == "сделай рентген", (
+            "«икс лучи» must win over the bare «икс» whatever the rule order"
+        )
+
+
 def test_alternatives_in_a_pattern_share_one_replacement() -> None:
     d = Dictionary([Rule("normalize", "впс|вэпээс|v p s", "VPS")])
     assert d.apply("вэпээс лежит") == "VPS лежит"

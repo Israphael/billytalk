@@ -28,7 +28,6 @@ SCHEMA_VERSION: Final = 1
 
 DDL: Final = """
 PRAGMA journal_mode=WAL;
-PRAGMA user_version=1;
 
 CREATE TABLE history (
   id                INTEGER PRIMARY KEY,
@@ -87,6 +86,12 @@ CREATE TABLE dictionary (
   repl  TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1
 );
+
+-- The version stamp goes LAST: executescript runs statements sequentially,
+-- and a script interrupted mid-way (disk full, power) must leave version 0 so
+-- the next start re-runs the DDL — stamped first, a half-created schema would
+-- read as version 1 and never be repaired (review round 1, unverified pile).
+PRAGMA user_version=1;
 """
 
 _MIGRATIONS: Final[dict[int, Callable[[sqlite3.Connection], None]]] = {}

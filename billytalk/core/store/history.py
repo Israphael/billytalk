@@ -392,8 +392,11 @@ class HistoryStore:
         """
         if not audio_dir.is_dir():
             return []
+        # Windows paths are case-insensitive; a raw string comparison would
+        # call a referenced file an orphan over a case difference and delete
+        # the only copy of the user's words. normcase+abspath on both sides.
         referenced = {
-            row[0]
+            os.path.normcase(os.path.abspath(row[0]))
             for row in self._conn.execute(
                 "SELECT audio_path FROM history WHERE audio_path IS NOT NULL"
             )
@@ -402,7 +405,7 @@ class HistoryStore:
         for file in audio_dir.iterdir():
             if not file.is_file():
                 continue
-            if str(file) in referenced:
+            if os.path.normcase(os.path.abspath(file)) in referenced:
                 continue
             _remove_quietly(str(file))
             removed.append(file)

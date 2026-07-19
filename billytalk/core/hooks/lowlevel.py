@@ -252,6 +252,10 @@ class HookThread(threading.Thread):
         )
         self._edges = EdgeLogic(already_down=already_down)
         self._tid = int(_kernel32.GetCurrentThreadId())
+        # Baseline for the watchdog: initialised to now, not 0 — against a
+        # zero base the very first divergence read spans the whole uptime and
+        # fires a pointless echo before any input has happened.
+        self.last_event_tick = int(_kernel32.GetTickCount())
 
         if not self._install():
             self.install_failed = f"SetWindowsHookExW failed, error {ct.get_last_error()}"

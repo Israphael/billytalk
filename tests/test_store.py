@@ -271,6 +271,25 @@ def test_pending_rows_are_queued_at_startup_in_press_order(
     assert all(p.audio_path for p in pending)
 
 
+def test_sweep_is_case_insensitive_like_the_filesystem(
+    store: HistoryStore, tmp_path: Path
+) -> None:
+    """Windows paths are case-insensitive; a raw string comparison would call a
+    referenced file an orphan over a case difference and delete the only copy
+    of the user's words (review round 1)."""
+    clip = _clip(tmp_path, "Referenced.flac")
+    store.add(
+        seq=1, created_at=1000, now=1000, duration_ms=800,
+        status=DeliveryStatus.PENDING_TRANSCRIBE,
+        audio_path=str(clip).upper(),  # stored in a different case
+    )
+
+    removed = store.sweep_orphan_audio(tmp_path)
+
+    assert removed == []
+    assert clip.exists(), "same file, different case: not an orphan"
+
+
 def test_orphan_audio_swept_at_startup(store: HistoryStore, tmp_path: Path) -> None:
     """Spec §3: a file no row points at is deleted; a row whose file is gone is
     left alone — it still holds text worth keeping."""
@@ -375,6 +394,19 @@ def test_config_from_the_future_refuses_to_start(tmp_path: Path) -> None:
     save_config(path, Config(schema_version=CONFIG_SCHEMA_VERSION + 5))
     with pytest.raises(ConfigTooNew):
         load_config(path, now_ms=1000)
+
+
+def test_non_integer_schema_version_is_corrupt_not_a_bypass(tmp_path: Path) -> None:
+    """'"99"' as a string used to slip past the newer-version gate entirely
+    (review round 1): a version field that cannot be trusted means the file
+    cannot be trusted — corrupt path, kept for inspection."""
+    path = tmp_path / "config.json"
+    path.write_text('{"schema_version": "99", "language": "en"}', encoding="utf-8")
+
+    loaded = load_config(path, now_ms=555)
+
+    assert loaded.corrupt_backup == tmp_path / "config.corrupt-555.json"
+    assert loaded.config == Config()
 
 
 def test_saved_config_round_trips_and_tolerates_unknown_keys(tmp_path: Path) -> None:

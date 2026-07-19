@@ -158,6 +158,27 @@ def test_esc_after_the_window_is_single_again() -> None:
     assert not late.suppress
 
 
+def test_esc_window_survives_the_49_day_tick_wrap() -> None:
+    """now_ms is a DWORD tick. Across the wrap a raw subtraction goes hugely
+    negative and would read as inside the window — a phantom double Esc once
+    every seven weeks of uptime (review round 1)."""
+    edges = EdgeLogic()
+    just_before_wrap = 0xFFFF_FF00
+    edges.on_edge(CODE_ESC, pressed=True, now_ms=just_before_wrap, snapshot=RECORDING)
+    edges.on_edge(CODE_ESC, pressed=False, now_ms=just_before_wrap + 40, snapshot=RECORDING)
+
+    after_wrap = 10_000  # far outside 400 ms even measured across the wrap
+    late = edges.on_edge(CODE_ESC, pressed=True, now_ms=after_wrap, snapshot=RECORDING)
+    assert late.event == "esc", "an Esc weeks later is a single Esc, not a pair"
+
+    # And a genuine pair that straddles the wrap still coalesces.
+    edges2 = EdgeLogic()
+    edges2.on_edge(CODE_ESC, pressed=True, now_ms=0xFFFF_FFF0, snapshot=RECORDING)
+    edges2.on_edge(CODE_ESC, pressed=False, now_ms=0xFFFF_FFF8, snapshot=RECORDING)
+    second = edges2.on_edge(CODE_ESC, pressed=True, now_ms=100, snapshot=RECORDING)
+    assert second.event == "double_esc", "116 ms apart, wrap or no wrap"
+
+
 def test_a_third_esc_starts_a_new_window() -> None:
     edges = EdgeLogic()
     edges.on_edge(CODE_ESC, pressed=True, now_ms=0, snapshot=RECORDING)

@@ -351,6 +351,27 @@ def test_invalid_key_stops_retrying_and_notifies(tmp_path: Path) -> None:
     assert len(world.provider.calls) == 2, "never retried again"
 
 
+def test_startup_with_pending_rows_begins_offline(tmp_path: Path) -> None:
+    """The gate cannot remember an outage across a restart; a non-empty queue
+    is its evidence. Cleanup stays paused until the first successful retry
+    reopens it through the usual ten-minute delay (review round 1)."""
+    world = build_world(tmp_path, outcomes=[FakeProvider.ok("вернулась связь")])
+    clip = tmp_path / "audio" / "waiting.flac"
+    clip.parent.mkdir(parents=True, exist_ok=True)
+    clip.write_bytes(b"fLaC-w")
+    world.store.add(
+        seq=1, created_at=500, now=600, duration_ms=900,
+        status=DeliveryStatus.PENDING_RETRY, audio_path=str(clip),
+    )
+
+    assert world.driver.enqueue_startup_pending() == 1
+    assert world.gate.offline, "unfinished rows: assume the outage persists"
+
+    world.advance(0)
+    world.run_jobs()
+    assert not world.gate.offline, "the successful retry is the proof of connectivity"
+
+
 def test_startup_pending_rows_go_back_to_the_queue(tmp_path: Path) -> None:
     world = build_world(tmp_path, outcomes=[FakeProvider.ok("из прошлой жизни")])
     clip = tmp_path / "audio" / "old.flac"

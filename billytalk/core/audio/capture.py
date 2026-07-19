@@ -69,6 +69,7 @@ class CaptureSession:
         """Open the stream. ``on_started`` fires later, from the first frame."""
         import sounddevice as sd
 
+        stream = None
         try:
             stream = sd.InputStream(
                 device=self._device,
@@ -79,6 +80,14 @@ class CaptureSession:
             )
             stream.start()
         except sd.PortAudioError as exc:
+            if stream is not None:
+                # The constructor opened the PortAudio stream even though
+                # start() refused: close it or the device stays claimed and
+                # every retry after this failure reports mic_busy forever.
+                try:
+                    stream.close()
+                except Exception:
+                    pass
             # Best-effort split of harness §7's two rows: a WASAPI privacy
             # block surfaces E_ACCESSDENIED (0x80070005) in the error text,
             # and its remedy ("открыть параметры приватности") is different

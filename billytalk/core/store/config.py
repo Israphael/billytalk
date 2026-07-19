@@ -99,6 +99,12 @@ def load_config(path: Path, *, now_ms: int) -> LoadedConfig:
         raw = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError("config root must be an object")
+        version = raw.get("schema_version", CONFIG_SCHEMA_VERSION)
+        if not isinstance(version, int) or isinstance(version, bool):
+            # "2" or 2.0 would silently bypass the newer-version gate below;
+            # a config whose version field cannot be trusted is a corrupt
+            # config, handled as such — kept for inspection, not guessed at.
+            raise ValueError("schema_version must be an integer")
     except (ValueError, OSError):
         backup = path.with_name(f"config.corrupt-{now_ms}.json")
         os.replace(path, backup)
@@ -106,8 +112,7 @@ def load_config(path: Path, *, now_ms: int) -> LoadedConfig:
         save_config(path, config)
         return LoadedConfig(config, corrupt_backup=backup)
 
-    version = raw.get("schema_version", CONFIG_SCHEMA_VERSION)
-    if isinstance(version, int) and version > CONFIG_SCHEMA_VERSION:
+    if version > CONFIG_SCHEMA_VERSION:
         raise ConfigTooNew(version)
 
     known = {f.name for f in dataclasses.fields(Config)}
