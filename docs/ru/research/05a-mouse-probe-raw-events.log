@@ -1,0 +1,25 @@
+﻿# BillyTalk - probe capture, mouse events only
+# Hardware: Razer DeathAdder V2 X HyperSpeed (VID_1532/PID_009C), wireless dongle
+# OS: Windows 11 Pro 10.0.26200   Date: 2026-07-19
+#
+# SANITISED: 41 keyboard-event lines removed (user keystrokes - never retained).
+# Only mouse events are kept, as evidence for the input-layer design decision.
+#
+[  35516.1 ms] HOOK  MOUSE     WM_XBUTTONDOWN    mouseData=0x00010000 -> HIWORD=1 -> XBUTTON1 = 'Mouse 4' (Back)
+[  35696.3 ms] HOOK  MOUSE     WM_XBUTTONUP      mouseData=0x00010000 -> HIWORD=1 -> XBUTTON1 = 'Mouse 4' (Back)   held 180 ms
+[  39952.8 ms] HOOK  MOUSE     WM_XBUTTONDOWN    mouseData=0x00010000 -> HIWORD=1 -> XBUTTON1 = 'Mouse 4' (Back)
+[  41031.8 ms] HOOK  MOUSE     WM_XBUTTONUP      mouseData=0x00010000 -> HIWORD=1 -> XBUTTON1 = 'Mouse 4' (Back)   held 1079 ms
+[  44710.0 ms] HOOK  MOUSE     WM_XBUTTONDOWN    mouseData=0x00020000 -> HIWORD=2 -> XBUTTON2 = 'Mouse 5' (Forward)
+[  44844.9 ms] HOOK  MOUSE     WM_XBUTTONUP      mouseData=0x00020000 -> HIWORD=2 -> XBUTTON2 = 'Mouse 5' (Forward)   held 135 ms
+[  82893.6 ms] HOOK  MOUSE     WM_LBUTTONDOWN  
+[  82953.5 ms] HOOK  MOUSE     WM_LBUTTONUP    
+[  84312.4 ms] HOOK  MOUSE     WM_MOUSEWHEEL   
+[  84349.3 ms] HOOK  MOUSE     WM_MOUSEWHEEL   
+[  84372.3 ms] HOOK  MOUSE     WM_MOUSEWHEEL   
+[  84392.3 ms] HOOK  MOUSE     WM_MOUSEWHEEL   
+[  84417.4 ms] HOOK  MOUSE     WM_MOUSEWHEEL   
+[  84444.3 ms] HOOK  MOUSE     WM_MOUSEWHEEL   
+[ 103232.8 ms] HOOK  MOUSE     WM_LBUTTONDOWN  
+[ 103316.6 ms] HOOK  MOUSE     WM_LBUTTONUP    
+[ 104334.3 ms] HOOK  MOUSE     WM_MOUSEWHEEL   
+[ 104383.2 ms] HOOK  MOUSE     WM_MOUSEWHEEL   
