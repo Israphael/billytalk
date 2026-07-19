@@ -143,6 +143,10 @@ class DriverDeps:
     audio_cap_rows: int = 500
     audio_cap_bytes: int = 2 * 1024**3
     bound_codes: frozenset[int] = frozenset({4099})
+    publish_state: Callable[[State], None] | None = None
+    """Observer for cycle 2's display surfaces (tray icon, IPC
+    ``state_changed``): called on the driver thread after every step with the
+    new state. Display only — must be cheap and must never raise."""
     now_ms: Callable[[], int] = lambda: int(time.monotonic() * 1000)
     wall_ms: Callable[[], int] = lambda: int(time.time() * 1000)
 
@@ -291,6 +295,8 @@ class Driver:
         for effect in effects:
             self._perform(effect, event)
         self._sync_hook_snapshot()
+        if self.deps.publish_state is not None:
+            self.deps.publish_state(self.state)
 
     def _is_stale(self, event: Event) -> bool:
         """§19: the machine trusts phase, not the event's seq — a late result

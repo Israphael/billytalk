@@ -29,11 +29,12 @@ from .insert.inserter import Inserter
 from .logging_setup import configure_logging
 from .machine.driver import Driver, DriverDeps
 from .machine.effects import ErrorCode
-from .machine.events import Exit, HookDied
+from .machine.events import Exit, HookDied, SetDictationEnabled
 from .stt.groq import GroqProvider
 from .store import CleanupGate, HistoryStore, connect, ensure_schema, load_config
 from .store import secrets
 from .text.dictionary import Dictionary
+from .tray import HiddenWindow, TrayIcon, TrayMenuItem, tray_state_for
 
 log = logging.getLogger("billytalk.main")
 
@@ -162,6 +163,51 @@ def main() -> int:
 
     threading.Thread(target=stdin_watcher, name="billytalk-stdin", daemon=True).start()
 
+    # -- tray (spec §11; OPEN-QUESTIONS §22: the icon lives in the core) --- #
+    CMD_TOGGLE, CMD_EXIT = 102, 109
+
+    def menu_model() -> tuple[TrayMenuItem, ...]:
+        # Window thread; driver.state is a frozen record rebound atomically.
+        return (
+            TrayMenuItem(101, "Открыть настройки", enabled=False),  # UI: далее в цикле 2
+            TrayMenuItem(),
+            TrayMenuItem(CMD_TOGGLE, "Диктовка включена", checked=driver.state.enabled),
+            TrayMenuItem(),
+            TrayMenuItem(CMD_EXIT, "Выход"),
+        )
+
+    def on_tray_command(command: int) -> None:
+        if command == CMD_TOGGLE:
+            driver.post(SetDictationEnabled(not driver.state.enabled))
+        elif command == CMD_EXIT:
+            driver.post(Exit())
+
+    window = HiddenWindow()
+    window.start()
+    tray: TrayIcon | None = None
+    if window.wait_ready(5.0) and window.hwnd:
+        tray = TrayIcon(window, menu_provider=menu_model, on_command=on_tray_command)
+        if not tray.add():
+            log.warning("tray icon failed to add; continuing without it")
+            tray = None
+    else:
+        log.warning("hidden window failed to start; continuing without a tray")
+
+    if tray is not None:
+        tray_ref = tray
+
+        def publish(state) -> None:  # driver thread; display only
+            tray_ref.set_state(
+                tray_state_for(
+                    phase_name=state.phase.name,
+                    enabled=state.enabled,
+                    offline=gate.offline,
+                    queue_len=len(state.queue),
+                )
+            )
+
+        deps.publish_state = publish
+
     # Everything long-lived exists; move it out of GC's reach so a collection
     # pass never runs inside the hook callback's budget (spec §2, ADR-0004).
     gc.freeze()
@@ -172,6 +218,9 @@ def main() -> int:
     except KeyboardInterrupt:
         driver.dispatch(Exit())
     finally:
+        if tray is not None:
+            tray.remove()
+        window.stop()
         hook.stop()
         stt_pool.shutdown(wait=False, cancel_futures=True)
     return 0
