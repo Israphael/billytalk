@@ -43,10 +43,11 @@ from .focus import Target, is_still_focused, try_restore_focus
 __all__ = ["InsertFailure", "InsertReport", "Inserter", "RESTORE_DELAY_MS", "prepare_text"]
 
 RESTORE_DELAY_MS: Final = 300
-"""Delay before the clipboard restore. Not yet measured — spike S2 will observe
-how long targets take to read the clipboard after Ctrl+V; until then this is
-the conservative guess, erring long (a late restore is harmless, an early one
-pastes the wrong text)."""
+"""Delay before the clipboard restore. Confirmed conservative by spike S2
+(research/12): a pasted marker becomes visible in the target a median 152 ms
+after SendInput (max 180 over 8 rounds), so 300 ms clears it comfortably. Kept
+at 300 rather than trimmed — a late restore is harmless, an early one pastes
+the wrong text."""
 
 MODIFIER_WAIT_MS: Final = 500  # spec §8: wait up to 500 ms for release
 
