@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Spike artifacts — regenerable, and logs may contain captured input
+spikes/.venv/
+spikes/*.log
+spikes/*.err
+spikes/*.wav
+spikes/*.flac
+probes/*.log
+probes/*.err
+
+# Secrets — never commit
+.env
+*.key
+secrets.*
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
