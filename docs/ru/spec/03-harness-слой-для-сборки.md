@@ -177,20 +177,28 @@ PRAGMA user_version=1;
 
 CREATE TABLE history (
   id                INTEGER PRIMARY KEY,
-  created_at        INTEGER NOT NULL,          -- unix ms
-  text_raw          TEXT    NOT NULL,
-  text_final        TEXT    NOT NULL,
+  seq               INTEGER NOT NULL,          -- порядок нажатия, для упорядоченной доставки
+  created_at        INTEGER NOT NULL,          -- unix ms, момент нажатия
+  -- ⚠️ NULL до расшифровки: строка создаётся в момент StopCapture (спека §3)
+  text_raw          TEXT,
+  text_final        TEXT,
   language          TEXT,
-  provider_id       TEXT    NOT NULL,
-  duration_ms       INTEGER NOT NULL,
-  billed_seconds    REAL    NOT NULL,
+  provider_id       TEXT,
+  duration_ms       INTEGER NOT NULL,          -- известна сразу
+  billed_seconds    REAL,
   latency_ms        INTEGER,
   target_app        TEXT,                      -- имя процесса, НЕ заголовок окна
   target_window_cls TEXT,
   delivery_status   TEXT    NOT NULL,
+  error_code        TEXT,                      -- из таксономии §7
+  retry_count       INTEGER NOT NULL DEFAULT 0,-- переживает перезапуск процесса
   polished          INTEGER NOT NULL DEFAULT 0,
   audio_path        TEXT,                      -- NULL после уборки
-  audio_delivered_at INTEGER                   -- отсчёт часа НАЧИНАЕТСЯ отсюда
+  audio_release_at  INTEGER,                   -- отсчёт часа; NULL = удерживать
+  CHECK (delivery_status IN (
+    'pending_transcribe','pending_retry','inserted','left_on_clipboard',
+    'focus_lost','verify_impossible','blocked_secure','transcribe_failed',
+    'cancelled','too_short','empty'))
 );
 
 CREATE INDEX idx_history_created ON history(created_at DESC);
@@ -235,9 +243,26 @@ CREATE TABLE dictionary (
 **Миграции:** `PRAGMA user_version`, последовательные функции `migrate_1_to_2` и т. д.
 Схема заводится сразу целиком, чтобы MVP-0 не требовал миграции при добавлении режима 2.
 
-**Уборка:** при старте и далее раз в час — удалить аудио, где
-`audio_delivered_at < now - 1ч`; **строки с `audio_delivered_at IS NULL` не трогать**
-(недоставленные). `VACUUM` раз в неделю при простое.
+**Уборка** (спека §3, срок из конфигурации, не литерал):
+
+```sql
+DELETE ... WHERE audio_release_at IS NOT NULL
+             AND audio_release_at < :now - :retention_minutes * 60000
+```
+
+`audio_release_at` ставится при **любом терминальном исходе, где текст дошёл до
+пользователя** — `inserted`, `left_on_clipboard`, `focus_lost`, `verify_impossible`.
+`NULL` означает «удерживать»: расшифровки ещё не было.
+
+⚠️ **Уборка не запускается вовсе, пока нет сети**, и возобновляется через 10 минут
+после первой успешной расшифровки. Верхний предел удержания — 500 записей или 2 ГБ,
+дальше вытесняются самые старые с уведомлением.
+
+**Сборка мусора при старте:** файлы в `audio\` без ссылающейся строки удаляются;
+строки в `pending_transcribe`/`pending_retry` ставятся в очередь повтора.
+
+`VACUUM` еженедельно при простое, **только если свободного места ≥ 2× размера базы**.
+`PRAGMA busy_timeout=5000`, `PRAGMA secure_delete=ON`.
 
 ---
 
@@ -327,14 +352,38 @@ def test_release_while_initialized_defers_not_cancels():
     assert StopCapture in types(fx)
 ```
 
-Обязательные имена тестов:
-`release_while_initialized_defers_not_cancels` ·
-`double_press_ignored` · `release_without_press_ignored` ·
-`esc_in_{initialized,recording,finalizing}_cancels` ·
-`esc_in_delivering_ignored` · `max_hold_delivers_to_history_not_paste` ·
+**Обязательные имена тестов** — по одному на ячейку таблицы спеки §4:
+
+*Отложенное отпускание и режимы*
+`release_while_initialized_defers_not_cancels` · `toggle_ignores_release_in_all_states` ·
+`double_press_ignored` · `release_without_press_ignored`
+
+*Успешный путь — его в редакции 2 не было вовсе*
+`capture_started_applies_deferred_release` · `transcribe_ok_enters_delivering` ·
+`insert_ok_returns_to_idle_or_next_queued`
+
+*Отмена*
+`single_esc_passes_through` · `double_esc_in_{initialized,recording,finalizing}_cancels` ·
+`double_esc_in_delivering_ignored`
+
+*Отказы и живучесть*
+`max_hold_delivers_to_history_not_paste` · `hook_death_finalizes_recording` ·
+`suspend_finalizes_recording` · `mic_error_enters_failed_then_idle` ·
+`failed_clears_suppression` · `history_write_failure_still_writes_clipboard`
+
+*Очередь*
 `second_dictation_queues_and_delivers_in_order` ·
-`toggle_ignores_release` · `hook_death_finalizes_recording` ·
-`short_press_discarded_silently`
+`failed_transcription_releases_its_ordering_slot` ·
+`fourth_press_rejected_at_press_time_with_cue`
+
+*Долговечность*
+`persist_audio_precedes_transcribe` · `write_history_precedes_insert` ·
+`write_clipboard_precedes_insert` · `short_press_recorded_but_silent` ·
+`empty_clip_recorded_but_silent`
+
+*Хранилище*
+`fts_delete_removes_row_from_search` · `fts_update_removes_old_tokens` ·
+`cleanup_skips_rows_with_null_release_at` · `cleanup_paused_while_offline`
 
 **Свойства над случайными последовательностями событий:**
 

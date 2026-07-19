@@ -1,0 +1,8 @@
+﻿# Dependencies for the measurement scripts in spikes/
+# The application itself is not built yet; this is only what the spikes import.
+wxPython>=4.2.5
+sounddevice>=0.5.5
+soundfile>=0.14.0
+pywin32>=312
+numpy>=2.5.1
+requests>=2.34.0

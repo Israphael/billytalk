@@ -47,9 +47,9 @@ cold connection        : 623 ms
 connection setup       : dns 121 ms + tcp 367 ms + tls 540 ms cumulative
 ```
 
-Groq is also *faster* than a self-hosted L4 would realistically sustain (80–120× realtime
-against Groq's 216×). At launch scale, owning hardware would be slower **and** more
-expensive.
+Measured end to end, Groq returned a 19.4-second clip in **368 ms** on a warm connection.
+I have not benchmarked a self-hosted GPU and make no claim about its speed beyond the
+cost analysis above.
 
 **Keeping a warm connection pool is mandatory, not an optimisation** — it saves 255 ms on
 every dictation.

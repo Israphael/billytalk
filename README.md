@@ -3,10 +3,15 @@
 **Push-to-talk dictation for Windows.** Hold a key — or a mouse side button — speak,
 and the text lands in whatever field your cursor was in.
 
-> **Status: design complete, implementation starting.** There is no working build yet.
-> What is in this repository right now is the engineering that comes *before* code:
-> competitor forensics, platform research, hardware verification, and measured spikes —
-> including two design decisions that measurement reversed.
+> **Status: design complete, no code yet.** There is nothing here to install and nothing
+> to run except the diagnostic scripts. What this repository contains is the engineering
+> that comes *before* code: competitor analysis, platform research, hardware verification,
+> and measured spikes — including three assumptions that measurement overturned.
+
+> **How this was built.** I wrote the research, ADRs and specification here with Claude
+> Code as a working partner; the commit trailers record it. Every empirical claim was
+> produced by running something on this machine — the scripts in `spikes/` and `probes/`
+> are what generated the numbers, and you can rerun them.
 
 ---
 
@@ -14,18 +19,19 @@ and the text lands in whatever field your cursor was in.
 
 There are good open-source dictation tools. None of them fit this shape:
 
-| | BillyTalk | [Handy](https://github.com/cjpais/Handy) | [Whispering](https://github.com/EpicenterHQ/epicenter) | [OpenTypeless](https://github.com/tover0314-w/opentypeless) |
+| | BillyTalk *(planned)* | [Handy](https://github.com/cjpais/Handy) | [Whispering](https://github.com/EpicenterHQ/epicenter) | [OpenTypeless](https://github.com/tover0314-w/opentypeless) |
 |---|---|---|---|---|
-| Mouse buttons as hotkey | **planned** | no | no | no |
-| Cloud STT | yes | **local only** | yes | yes |
-| Windows desktop build | yes | yes | **retired 2026-07** | yes |
-| License allows a commercial tier | MIT | MIT | AGPL | MIT |
+| Mouse buttons as hotkey | planned | no | no | no |
+| Cloud STT | planned | local only | yes | yes |
+| Windows desktop build | planned | yes | discontinued 2026-07 | yes |
+| License | MIT | MIT | AGPL | MIT |
 
-**Nobody supports mouse buttons for push-to-talk.** Not one of the projects surveyed.
-The library ecosystem reflects it: `tauri-plugin-global-shortcut` is keyboard-only,
-`global-hotkey` is keyboard-only, and `handy-keys` — which *does* name `MouseX1`/`MouseX2` —
-states plainly that pointer devices are never grabbed, so mouse hotkeys are detected but
-cannot be suppressed.
+**None of the projects I surveyed supports mouse buttons for push-to-talk.** The library
+ecosystem reflects it: [`tauri-plugin-global-shortcut`](https://v2.tauri.app/plugin/global-shortcut/)
+and [`global-hotkey`](https://github.com/tauri-apps/global-hotkey) are keyboard-only, and
+[`handy-keys`](https://github.com/handy-computer/handy-keys) — which *does* name
+`MouseX1`/`MouseX2` — states plainly that pointer devices are never grabbed, so mouse
+hotkeys are detected but cannot be suppressed.
 
 That gap is the reason this project exists.
 
@@ -47,11 +53,11 @@ That gap is the reason this project exists.
 | **2.0** | Text-to-speech; reading screen content aloud. |
 | **3.0** | Sight-free dictation and correction, integrated with the screen reader the user already runs. |
 
-Three transcription modes, one interface behind them:
+Three transcription modes are planned behind one interface:
 
-1. **Your own API key** — Groq `whisper-large-v3-turbo`
-2. **Hosted free tier** — 5,000 words/week, no signup, no key
-3. **Fully local** — model chosen to fit your hardware, unlimited, nothing leaves the machine
+1. **Your own API key** — Groq `whisper-large-v3-turbo` *(MVP-0)*
+2. **Hosted free tier** — target 5,000 words/week, no signup, no key *(1.0, not running yet)*
+3. **Fully local** — model sized to your hardware, unlimited, nothing leaves the machine *(1.0)*
 
 ---
 
@@ -93,18 +99,25 @@ action happened:
   received **zero events**, because the thread used a `PeekMessage` spin loop instead of
   blocking `GetMessage`.
 - `SendInput` returned 1 for a zero-delta mouse move — the event was silently discarded.
-- `SendInput` reports a successful paste that never lands. This is a
-  [10-month-old open bug](https://github.com/EpicenterHQ/epicenter/issues/841) in another
-  dictation app, losing 5–10% of pastes.
+- `SendInput` can report a successful paste that never lands. Whispering has
+  [an open issue](https://github.com/EpicenterHQ/epicenter/issues/841) tracking this since
+  2025, where users report losing a fraction of pastes — a good illustration of how hard
+  this failure is to catch, since the API says it worked.
 
 **Project rule: in Windows input APIs, a success code is not evidence. Verify the
 observable effect.**
 
 ### Learning from a competitor's logs
 
-The author of this project was a paying Wispr Flow user with two complaints: dictation
-cutting off, and text landing in the wrong window. Reading that app's own logs found both
-root causes.
+I was a paying Wispr Flow user with two complaints: dictation cutting off, and text
+landing in the wrong window. Reading that app's own logs found both root causes.
+
+> **Scope of that analysis.** On my own machine, on my own data, I read what the app
+> writes to disk — file layout, config schema, database schema, and its own log output.
+> I did not read transcript contents, token values, or DPAPI-protected data, did not
+> intercept traffic, and did not modify the installation. Observations about how that
+> product protects user data are deliberately **not** published here; they belong to the
+> vendor first.
 
 **Cut-off dictation is a startup race, not a timeout:**
 
@@ -162,6 +175,9 @@ This design borrows openly from work done in public:
 - **[NVDA](https://github.com/nvaccess/nvda)** — `SynthDriver` and the Input Gestures
   dialog are the reference for speech abstraction and for capturing a hotkey while a
   screen reader is consuming the same chords.
-- **[whisperi](https://github.com/), [OpenTypeless](https://github.com/tover0314-w/opentypeless), [openless](https://github.com/Open-Less/openless), [Handy](https://github.com/cjpais/Handy)** —
+- **whisperi** (MIT), **[OpenTypeless](https://github.com/tover0314-w/opentypeless)**,
+  **[openless](https://github.com/Open-Less/openless)**, **[Handy](https://github.com/cjpais/Handy)** —
   read for their Windows insertion, held-modifier guard, side-aware hooks, and
   push-to-talk state-machine test harness respectively. Patterns studied, code not copied.
+  All four are single- or small-team projects doing careful work; the notes in
+  [ADR-0002](docs/adr/0002-build-fresh-not-fork.md) are about fit, not quality.
