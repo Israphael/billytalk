@@ -270,6 +270,9 @@ class HiddenWindow(threading.Thread):
         self._ready = threading.Event()
         self.hwnd: int | None = None
         self._tid: int | None = None
+        # Spec §11, verbatim: RegisterWindowMessageW **before** the window is
+        # created — the atom exists before the first message could arrive.
+        self.taskbar_created_msg: int = _user32.RegisterWindowMessageW("TaskbarCreated")
         # Process-lifetime reference, same reason as the hook thunks: a
         # collected WNDPROC is a crash on the next message.
         self._wndproc = _WNDPROC(self._on_message)
@@ -577,9 +580,9 @@ class TrayIcon:
         self._added = False
         self._light_taskbar = _system_uses_light_taskbar()
         self._icons: dict[TrayState, int] = {}
-        # ⚠ Registered BEFORE any window existed is ideal; before the icon is
-        # added is the load-bearing minimum. The atom is stable per session.
-        self._taskbar_created = _user32.RegisterWindowMessageW("TaskbarCreated")
+        # The atom was registered by HiddenWindow.__init__, before the window
+        # existed (spec §11's ordering, to the letter).
+        self._taskbar_created = window.taskbar_created_msg
         window.on(TRAY_CALLBACK_MSG, self._on_callback)
         window.on(self._taskbar_created, self._on_taskbar_created)
 

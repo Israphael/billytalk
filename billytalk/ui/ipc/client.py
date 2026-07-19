@@ -83,10 +83,14 @@ class IpcClient:
         name: str,
         *,
         on_message: Callable[[dict[str, Any]], None],
+        expected_image: str | None,
         on_disconnect: Callable[[], None] | None = None,
-        expected_image: str | None = None,
         app_version: str = __version__,
     ) -> None:
+        # ``expected_image`` has no default on purpose (review): silently
+        # skippable verification is a disabled defence. The product always
+        # passes the installed core's exe path; ``None`` is an explicit,
+        # visible opt-out for tests.
         self._name = name
         self._on_message = on_message
         self._on_disconnect = on_disconnect

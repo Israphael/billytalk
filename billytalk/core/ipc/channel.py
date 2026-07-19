@@ -27,7 +27,7 @@ import pywintypes
 import win32event
 import win32file
 
-__all__ = ["OverlappedPipe", "PipeClosed", "PipeTimeout", "cancel_io"]
+__all__ = ["WRITE_TIMEOUT_MS", "OverlappedPipe", "PipeClosed", "PipeTimeout", "cancel_io"]
 
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 """pywin32 312 wraps ``CancelIo`` (thread-bound, useless from a stop path on
@@ -74,9 +74,15 @@ class OverlappedPipe:
     it and every blocked operation raises :class:`PipeClosed`.
     """
 
-    def __init__(self, handle: Any, stop_event: Any) -> None:
+    def __init__(self, handle: Any, stop_event: Any, dead_event: Any = None) -> None:
         self._handle = handle
         self._stop_event = stop_event
+        # ⚠ CancelIoEx is edge-triggered: it aborts only I/O pending at that
+        # instant. A death signal delivered while the reader is *between*
+        # reads (inside a handler) would be lost — hence this optional
+        # level-triggered manual-reset event, included in every wait
+        # (adversarial review of cycle 2, confirmed live).
+        self._dead_event = dead_event
         self._read_event = win32event.CreateEvent(None, True, False, None)
         self._write_event = win32event.CreateEvent(None, True, False, None)
         self._read_buffer = win32file.AllocateReadBuffer(_READ_CHUNK)
@@ -122,18 +128,20 @@ class OverlappedPipe:
     # ------------------------------------------------------------------ #
 
     def _await(self, overlapped: Any, io_event: Any, timeout_ms: int | None) -> None:
-        """Wait for completion, stop, or deadline — in that priority order."""
+        """Wait for completion, stop/death, or deadline — in that priority order."""
         timeout = win32event.INFINITE if timeout_ms is None else max(0, timeout_ms)
-        rc = win32event.WaitForMultipleObjects(
-            [self._stop_event, io_event], False, timeout
-        )
-        if rc == win32event.WAIT_OBJECT_0:  # stop
-            self._abort(overlapped)
-            raise PipeClosed("stopped")
+        waitables = [self._stop_event]
+        if self._dead_event is not None:
+            waitables.append(self._dead_event)
+        waitables.append(io_event)
+        rc = win32event.WaitForMultipleObjects(waitables, False, timeout)
         if rc == win32event.WAIT_TIMEOUT:
             self._abort(overlapped)
             raise PipeTimeout(f"pipe operation still pending after {timeout_ms} ms")
-        # WAIT_OBJECT_0 + 1: the I/O completed; _drain collects it.
+        if rc - win32event.WAIT_OBJECT_0 < len(waitables) - 1:  # stop or death
+            self._abort(overlapped)
+            raise PipeClosed("stopped" if rc == win32event.WAIT_OBJECT_0 else "connection dead")
+        # The last waitable: the I/O completed; _drain collects it.
 
     def _abort(self, overlapped: Any) -> None:
         """Cancel and *complete* the operation. The kernel owns the buffer

@@ -56,7 +56,7 @@ import win32ts
 import winerror
 
 from ... import __version__
-from .channel import OverlappedPipe, PipeClosed, PipeTimeout, cancel_io
+from .channel import WRITE_TIMEOUT_MS, OverlappedPipe, PipeClosed, PipeTimeout, cancel_io
 from .protocol import (
     PROTOCOL_VERSION,
     UI_TO_CORE,
@@ -151,6 +151,7 @@ class IpcServer:
         on_disconnect: Callable[[], None] | None = None,
         core_version: str = __version__,
         handshake_timeout_ms: int = HANDSHAKE_TIMEOUT_MS,
+        write_timeout_ms: int | None = None,
     ) -> None:
         self._name = name
         self._handler = handler
@@ -158,11 +159,15 @@ class IpcServer:
         self._on_disconnect = on_disconnect
         self._core_version = core_version
         self._handshake_timeout_ms = handshake_timeout_ms
+        self._write_timeout_ms = (
+            write_timeout_ms if write_timeout_ms is not None else WRITE_TIMEOUT_MS
+        )
         self._pipe: Any = None
         self._stop = threading.Event()
         self._stop_win32 = win32event.CreateEvent(None, True, False, None)  # manual-reset
         self._connected = threading.Event()
         self._channel: OverlappedPipe | None = None
+        self._conn_dead: Any = None
         self._outbound: queue.Queue[bytes | None] | None = None
         self._thread: threading.Thread | None = None
 
@@ -216,14 +221,24 @@ class IpcServer:
         return self._connected.is_set()
 
     def send(self, message: dict[str, Any]) -> bool:
-        """Queue a core→UI message. Never blocks (the driver thread lives on
-        a hook-budget clock). Returns False when there is no UI to hear it —
-        events are advisory display, the store is the durable truth."""
+        """Queue a core→UI message. Never blocks and never raises (the driver
+        thread lives on a hook-budget clock, and an exception here would ride
+        up whatever thread called it — review, cycle 2). Returns False when
+        there is no UI to hear it — events are advisory display, the store is
+        the durable truth."""
         outbound = self._outbound
         if outbound is None or not self._connected.is_set():
             return False
         try:
-            outbound.put_nowait(encode_frame(message))
+            frame = encode_frame(message)
+        except FrameError as exc:
+            # One oversized reply must cost that reply, not the server: the
+            # frame cap protects the stream, dropping the message honours it.
+            log.warning("outbound frame refused (%s); type %r dropped",
+                        exc, message.get("type"))
+            return False
+        try:
+            outbound.put_nowait(frame)
             return True
         except queue.Full:
             log.warning("outbound queue full; dropping the UI connection")
@@ -249,6 +264,14 @@ class IpcServer:
                 if self._stop.is_set():
                     return
                 log.info("ipc connection dropped: winerror %d", exc.winerror)
+            except Exception:
+                # The review's rule: no exception may kill this thread. A dead
+                # accept thread leaves the name claimed but never re-armed —
+                # every future UI gets ERROR_PIPE_BUSY while the core dictates
+                # on, and under console=False the traceback goes nowhere.
+                if self._stop.is_set():
+                    return
+                log.exception("ipc connection handling failed; re-accepting")
             finally:
                 self._end_connection(pipe)
 
@@ -280,13 +303,19 @@ class IpcServer:
         raise pywintypes.error(rc, "ConnectNamedPipe", "unexpected return")
 
     def _serve_one(self, pipe: Any) -> None:
-        channel = OverlappedPipe(pipe, self._stop_win32)
+        # Level-triggered death signal for THIS connection: CancelIoEx alone
+        # is edge-triggered and misses a reader that is between reads (inside
+        # a handler) at the moment the writer dies (review, confirmed live).
+        dead = win32event.CreateEvent(None, True, False, None)
+        channel = OverlappedPipe(pipe, self._stop_win32, dead_event=dead)
         self._channel = channel
+        self._conn_dead = dead
         decoder = FrameDecoder()
 
-        first = self._await_handshake(channel, decoder)
-        if first is None:
+        messages = self._await_handshake(channel, decoder)
+        if not messages:
             return
+        first = messages[0]
 
         if first.get("type") != "hello" or first.get("role") != "ui":
             log.warning("first frame was not a UI hello; dropping connection")
@@ -314,36 +343,61 @@ class IpcServer:
 
         self._outbound = queue.Queue(maxsize=OUTBOUND_QUEUE_MAX)
         writer = threading.Thread(
-            target=self._write_loop, args=(channel, self._outbound),
+            target=self._write_loop, args=(channel, self._outbound, dead),
             name="billytalk-ipc-writer", daemon=True,
         )
         writer.start()
         self._connected.set()
         if self._on_connect is not None:
-            self._on_connect()
+            try:
+                self._on_connect()
+            except Exception:
+                log.exception("on_connect callback failed")
         try:
+            # Requests the client pipelined in the same chunk as hello are
+            # real traffic, not garbage (review): dispatch them now that the
+            # ack is written and replies have somewhere to go.
+            for message in messages[1:]:
+                self._dispatch(message)
             self._read_loop(channel, decoder)
         finally:
             self._connected.clear()
             outbound, self._outbound = self._outbound, None
             if outbound is not None:
-                outbound.put(None)  # writer: drain and exit
+                # ⚠ Never a blocking put: in the overflow path the writer died
+                # with the queue still full, and a blocking sentinel deadlocked
+                # this thread forever (review, confirmed live by three probes).
+                while True:
+                    try:
+                        outbound.put_nowait(None)
+                        break
+                    except queue.Full:
+                        try:
+                            outbound.get_nowait()
+                        except queue.Empty:
+                            continue
             writer.join(timeout=1.0)
+            self._conn_dead = None
             if self._on_disconnect is not None:
                 # Spec §14: hotkey capture is released on channel break —
                 # this callback is that release point.
-                self._on_disconnect()
+                try:
+                    self._on_disconnect()
+                except Exception:
+                    log.exception("on_disconnect callback failed")
 
     def _await_handshake(
         self, channel: OverlappedPipe, decoder: FrameDecoder
-    ) -> dict[str, Any] | None:
-        """First frame within the deadline, or nothing."""
+    ) -> list[dict[str, Any]] | None:
+        """Every message of the first complete chunk within the deadline, or
+        nothing. The whole list travels back because a client may legally
+        pipeline its first requests behind hello in one write."""
         try:
             while True:
                 chunk = channel.read(timeout_ms=self._handshake_timeout_ms)
                 messages = decoder.feed(chunk)
                 if messages:
-                    return messages[0]
+                    return messages
                 # a partial frame arrived; keep the same deadline discipline
         except PipeTimeout:
             log.warning("client connected but sent no hello; dropping")
@@ -390,24 +444,34 @@ class IpcServer:
     # plumbing
     # ------------------------------------------------------------------ #
 
-    def _write_loop(self, channel: OverlappedPipe, outbound: queue.Queue[bytes | None]) -> None:
-        while True:
-            frame = outbound.get()
-            if frame is None:
-                return
-            try:
-                channel.write(frame)
-            except (PipeClosed, PipeTimeout):
-                # The write side saw the death (or a peer that stopped
-                # reading, which is death by policy). Abort whatever the
-                # reader is waiting on so teardown is immediate.
-                channel.cancel_all()
-                return
+    def _write_loop(
+        self, channel: OverlappedPipe, outbound: queue.Queue[bytes | None], dead: Any
+    ) -> None:
+        try:
+            while True:
+                frame = outbound.get()
+                if frame is None:
+                    return
+                try:
+                    channel.write(frame, timeout_ms=self._write_timeout_ms)
+                except (PipeClosed, PipeTimeout):
+                    # The write side saw the death (or a peer that stopped
+                    # reading, which is death by policy).
+                    return
+        finally:
+            # Level-triggered: wakes a reader parked in ReadFile *and* catches
+            # one that is currently inside a handler (review). Setting it on
+            # the normal sentinel exit is harmless — teardown is already on.
+            win32event.SetEvent(dead)
+            channel.cancel_all()
 
     def _disconnect_current(self) -> None:
-        """Force the current client off without stopping the server: abort
-        pending I/O; the woken reader tears the connection down and the
-        accept loop takes the next client."""
+        """Force the current client off without stopping the server: raise
+        the connection's death event and abort pending I/O; the woken reader
+        tears the connection down and the accept loop takes the next client."""
+        dead = self._conn_dead
+        if dead is not None:
+            win32event.SetEvent(dead)
         channel = self._channel
         if channel is not None:
             channel.cancel_all()

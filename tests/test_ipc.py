@@ -401,7 +401,7 @@ def test_client_rejects_a_server_from_a_foreign_image(server_name) -> None:
 
 
 def test_client_reports_a_missing_core() -> None:
-    client = IpcClient(_test_name(), on_message=lambda m: None)
+    client = IpcClient(_test_name(), on_message=lambda m: None, expected_image=None)
     with pytest.raises(CoreNotRunning):
         client.connect(timeout_ms=200)
 
@@ -413,7 +413,7 @@ def test_client_raises_protocol_mismatch(server_name, monkeypatch) -> None:
         lambda app_version: {"type": "hello", "protocol": 99, "role": "ui",
                              "app_version": app_version},
     )
-    client = IpcClient(name, on_message=lambda m: None)
+    client = IpcClient(name, on_message=lambda m: None, expected_image=None)
     with pytest.raises(ProtocolMismatch):
         client.connect()
 
@@ -423,7 +423,7 @@ def test_client_disconnect_callback_fires_when_the_core_dies() -> None:
     server = IpcServer(name, handler=_echo_handler)
     server.start()
     dropped = threading.Event()
-    client = IpcClient(name, on_message=lambda m: None, on_disconnect=dropped.set)
+    client = IpcClient(name, on_message=lambda m: None, expected_image=None, on_disconnect=dropped.set)
     client.connect()
     try:
         server.stop()
@@ -438,8 +438,168 @@ def test_client_close_is_quiet() -> None:
     server = IpcServer(name, handler=_echo_handler)
     server.start()
     dropped = threading.Event()
-    client = IpcClient(name, on_message=lambda m: None, on_disconnect=dropped.set)
+    client = IpcClient(name, on_message=lambda m: None, expected_image=None, on_disconnect=dropped.set)
     client.connect()
     client.close()
     assert not dropped.wait(0.3)
     server.stop()
+
+# --------------------------------------------------------------------------- #
+# regressions from the cycle-2 adversarial review (all confirmed live there)
+# --------------------------------------------------------------------------- #
+
+def _flood_until_drop(server: IpcServer, *, pad: int = 8_000, cap: int = 3_000) -> bool:
+    """Push frames at a non-reading client until send() takes the drop path."""
+    deadline = time.monotonic() + 30.0
+    for _ in range(cap):
+        if not server.send({"type": "state_changed", "pad": "x" * pad}):
+            return True
+        if time.monotonic() > deadline:
+            break
+    return False
+
+
+def test_overflow_disconnect_completes_teardown_and_rearms() -> None:
+    """The queue-full drop path used to deadlock the serve thread forever in
+    a blocking put(None): no on_disconnect, pipe busy until process restart."""
+    name = _test_name()
+    connected = threading.Event()
+    disconnected = threading.Event()
+    server = IpcServer(
+        name, handler=_echo_handler,
+        on_connect=connected.set, on_disconnect=disconnected.set,
+    )
+    server.start()
+    try:
+        wedged = _connect_raw(name)
+        try:
+            _handshake_raw(wedged)
+            assert connected.wait(DEADLINE_S)
+            assert _flood_until_drop(server), "send() never hit the drop path"
+            # The whole point: teardown completes, the release point fires...
+            assert disconnected.wait(5.0), "on_disconnect never fired (deadlock)"
+        finally:
+            wedged.Close()
+        # ...and the slot is re-armed for the next UI.
+        handle = _connect_raw(name)
+        try:
+            _handshake_raw(handle)
+        finally:
+            handle.Close()
+    finally:
+        server.stop()
+
+
+def test_writer_timeout_severs_a_wedged_connection() -> None:
+    """A peer that stops reading kills the writer by PipeTimeout; the death
+    must be level-triggered so the parked reader dies with it — previously
+    the connection survived as a zombie (connected=True, nobody writing)."""
+    name = _test_name()
+    disconnected = threading.Event()
+    server = IpcServer(
+        name, handler=_echo_handler,
+        on_disconnect=disconnected.set, write_timeout_ms=300,
+    )
+    server.start()
+    try:
+        wedged = _connect_raw(name)
+        try:
+            _handshake_raw(wedged)
+            # Enough to overrun the 64 KiB pipe buffer so the writer pends,
+            # then times out at 300 ms. The client handle stays OPEN — the
+            # disconnect must come from our side, not from the peer dying.
+            for _ in range(30):
+                server.send({"type": "state_changed", "pad": "x" * 8_000})
+            assert disconnected.wait(5.0), "writer death left a zombie connection"
+            assert not server.connected
+        finally:
+            wedged.Close()
+    finally:
+        server.stop()
+
+
+def test_oversized_reply_is_dropped_but_the_connection_survives() -> None:
+    """FrameTooLarge from a handler reply used to unwind through the serve
+    thread and kill IPC for the rest of the process's life."""
+    name = _test_name()
+
+    def handler(message: dict[str, Any]) -> dict[str, Any] | None:
+        if message["type"] == "history_search":
+            return reply(message["id"], {"pad": "x" * (MAX_FRAME_BYTES + 16)})
+        return _echo_handler(message)
+
+    server = IpcServer(name, handler=handler)
+    server.start()
+    try:
+        handle = _connect_raw(name)
+        try:
+            _handshake_raw(handle)
+            win32file.WriteFile(handle, encode_frame({"type": "history_search", "id": 1}))
+            # The oversized reply is dropped; the connection must still work.
+            win32file.WriteFile(handle, encode_frame({"type": "toggle_dictation", "id": 2}))
+            response = _read_messages(handle, FrameDecoder(), 1)[0]
+            assert response == {"type": "reply", "id": 2, "result": {"echo": "toggle_dictation"}}
+        finally:
+            handle.Close()
+    finally:
+        server.stop()
+
+
+def test_requests_pipelined_with_hello_are_processed(server_name) -> None:
+    """A client may legally write hello and its first request in one chunk;
+    the tail used to be silently discarded by the handshake reader."""
+    name, _ = server_name
+    handle = _connect_raw(name)
+    try:
+        win32file.WriteFile(
+            handle,
+            encode_frame(hello()) + encode_frame({"type": "toggle_dictation", "id": 9}),
+        )
+        messages = _read_messages(handle, FrameDecoder(), 2)
+        assert messages[0]["type"] == "hello_ack"
+        assert {"type": "reply", "id": 9, "result": {"echo": "toggle_dictation"}} in messages
+    finally:
+        handle.Close()
+
+
+def test_garbage_after_handshake_drops_only_that_connection(server_name) -> None:
+    name, _ = server_name
+    handle = _connect_raw(name)
+    try:
+        _handshake_raw(handle)
+        win32file.WriteFile(handle, b"\xff\xff\xff\x7f")  # absurd length prefix
+        assert _pipe_is_dead(handle)
+    finally:
+        handle.Close()
+    handle = _connect_raw(name)  # the server survived the framing violation
+    try:
+        _handshake_raw(handle)
+    finally:
+        handle.Close()
+
+
+def test_raising_connect_callback_does_not_kill_the_server() -> None:
+    """Callback exceptions used to unwind past _serve_forever and silently
+    kill the accept thread (name claimed, never re-armed)."""
+    name = _test_name()
+    server = IpcServer(
+        name, handler=_echo_handler,
+        on_connect=lambda: 1 / 0,
+    )
+    server.start()
+    try:
+        handle = _connect_raw(name)
+        try:
+            _handshake_raw(handle)
+            win32file.WriteFile(handle, encode_frame({"type": "toggle_dictation", "id": 4}))
+            response = _read_messages(handle, FrameDecoder(), 1)[0]
+            assert response["id"] == 4
+        finally:
+            handle.Close()
+        handle = _connect_raw(name)
+        try:
+            _handshake_raw(handle)
+        finally:
+            handle.Close()
+    finally:
+        server.stop()
