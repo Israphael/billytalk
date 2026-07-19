@@ -67,6 +67,28 @@ def test_subclasses_of_sensitive_are_covered() -> None:
     assert RedactionFilter().filter(_record("%s", Polished())) is False
 
 
+def test_configure_logging_resets_http_client_debuglevel(tmp_path: Path) -> None:
+    """Spec §13's second startup duty: http.client prints its debug output via
+    bare print(), past every logging filter — with debuglevel=1 every Groq
+    request would print the Authorization header and the speech-bearing body.
+    Resetting beats refusing: the point is that the channel closes."""
+    import http.client
+
+    root = logging.getLogger()
+    saved_handlers, saved_level = root.handlers[:], root.level
+    http.client.HTTPConnection.debuglevel = 1
+    try:
+        root.handlers.clear()
+        configure_logging(tmp_path / "logs")
+        assert http.client.HTTPConnection.debuglevel == 0
+    finally:
+        http.client.HTTPConnection.debuglevel = 0
+        for h in root.handlers:
+            h.close()
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)
+
+
 def test_configure_logging_attaches_the_filter_and_quiets_third_parties(
     tmp_path: Path,
 ) -> None:

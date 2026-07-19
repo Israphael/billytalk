@@ -310,6 +310,30 @@ def test_transcription_makes_the_row_searchable(store: HistoryStore, tmp_path: P
     assert found[0]["text_raw"] == "перезапусти впс в бразилии"
 
 
+def test_search_survives_fts_operator_looking_queries(
+    store: HistoryStore, tmp_path: Path
+) -> None:
+    """Review round 1, privacy: raw FTS5 MATCH turned «кое-что» into an
+    OperationalError whose *message* carried the user's words — transcript
+    substrings, which spec §13 forbids in any log. Quoted tokens keep everyday
+    hyphens and colons searchable and word-free on failure."""
+    clip = _clip(tmp_path, "a.flac")
+    rid = store.add(
+        seq=1, created_at=1000, now=1500, duration_ms=800,
+        status=DeliveryStatus.PENDING_TRANSCRIBE, audio_path=str(clip),
+    )
+    store.record_transcription(
+        rid, text_raw="сделай кое-что важное", text_final="сделай кое-что важное",
+        language="ru", provider_id="groq", billed_seconds=1.0, latency_ms=300,
+    )
+
+    assert [r["id"] for r in store.search("кое-что")] == [rid]
+    assert store.search("пароль:staging") == []       # no crash, no leak
+    assert store.search('NEAR AND OR ("') == []       # operators are just words
+    assert store.search("") == []
+    assert store.search("важное") == [store.search("важное")[0]]
+
+
 def test_retry_count_survives_in_the_row(store: HistoryStore, tmp_path: Path) -> None:
     clip = _clip(tmp_path, "a.flac")
     rid = store.add(
@@ -369,6 +393,27 @@ def test_saved_config_round_trips_and_tolerates_unknown_keys(tmp_path: Path) -> 
 # --------------------------------------------------------------------------- #
 # secrets (Credential Manager, live)
 # --------------------------------------------------------------------------- #
+
+
+def test_undecodable_credential_raises_sanitised_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review round 1, privacy: a blob written by other tooling in UTF-8 used
+    to escape as UnicodeDecodeError carrying the complete key in .object —
+    rendered whole by repr(). The sanitised error carries the target only,
+    and no blob-bearing exception survives on __context__."""
+    from billytalk.core.store import secrets
+
+    monkeypatch.setattr(
+        secrets.win32cred,
+        "CredRead",
+        lambda target, ctype: {"CredentialBlob": b"gsk_secret!"},  # odd length
+    )
+    with pytest.raises(secrets.SecretUndecodable) as excinfo:
+        secrets.read_secret("BillyTalk/test-broken")
+    assert "gsk" not in repr(excinfo.value)
+    assert excinfo.value.__context__ is None, "the blob-carrying exception is gone"
+    assert "BillyTalk/test-broken" in str(excinfo.value)
 
 
 def test_secret_roundtrip_against_the_real_credential_manager() -> None:

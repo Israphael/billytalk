@@ -308,9 +308,13 @@ class HookThread(threading.Thread):
             if xbutton in (1, 2):
                 code = xbutton_to_code(xbutton)
                 snapshot = self._snapshot
-                if code in snapshot.bound:
+                # Bound OR tracked: a release whose code was unbound mid-hold
+                # must still reach EdgeLogic, or the pairing rule dies at this
+                # gate and the app gets an orphaned WM_XBUTTONUP — browser Back.
+                if code in snapshot.bound or (self._edges is not None and self._edges.tracks(code)):
                     return self._decide(
                         code, pressed=(w_param == WM_XBUTTONDOWN), tick=data.time,
+                        snapshot=snapshot,
                         n_code=n_code, w_param=w_param, l_param=l_param,
                     )
         return _user32.CallNextHookEx(None, n_code, w_param, l_param)
@@ -324,7 +328,9 @@ class HookThread(threading.Thread):
             return _user32.CallNextHookEx(None, n_code, w_param, l_param)
         vk = int(data.vkCode)
         snapshot = self._snapshot
-        if vk == CODE_ESC or vk in snapshot.bound:
+        if vk == CODE_ESC or vk in snapshot.bound or (
+            self._edges is not None and self._edges.tracks(vk)
+        ):
             if w_param in (WM_KEYDOWN, WM_SYSKEYDOWN):
                 pressed = True
             elif w_param in (WM_KEYUP, WM_SYSKEYUP):
@@ -333,17 +339,21 @@ class HookThread(threading.Thread):
                 return _user32.CallNextHookEx(None, n_code, w_param, l_param)
             return self._decide(
                 vk, pressed=pressed, tick=data.time,
+                snapshot=snapshot,
                 n_code=n_code, w_param=w_param, l_param=l_param,
             )
         return _user32.CallNextHookEx(None, n_code, w_param, l_param)
 
     def _decide(
-        self, code: int, *, pressed: bool, tick: int,
+        self, code: int, *, pressed: bool, tick: int, snapshot: HookSnapshot,
         n_code: int, w_param: int, l_param: int,
     ) -> int:
+        # The snapshot travels from the gate rather than being re-read: one
+        # edge, one snapshot — re-reading here could judge the gate and the
+        # decision by two different worlds (review round 1).
         assert self._edges is not None
         decision = self._edges.on_edge(
-            code, pressed=pressed, now_ms=tick, snapshot=self._snapshot
+            code, pressed=pressed, now_ms=tick, snapshot=snapshot
         )
         if decision.event is not None:
             self._on_event(HookEvent(kind=decision.event, code=code, tick_ms=tick))

@@ -298,9 +298,12 @@ DELETE ... WHERE audio_release_at IS NOT NULL
 ```python
 class Sensitive:
     """Базовый тип для аудио и расшифровок."""
-    def __repr__(self):  raise TypeError("Sensitive value must never be rendered")
+    # ⚠️ НЕ возбуждать исключение (спека §13): __repr__ срабатывает внутри
+    # обработчиков ошибок, и исключение из него превращает восстановимый отказ
+    # вставки в падение, уничтожающее диктовку. Возвращать константу.
+    def __repr__(self):  return "<redacted:transcript>"
     __str__ = __repr__
-    def __format__(self, spec): raise TypeError("...")
+    def __format__(self, spec): return "<redacted:transcript>"
 
 class RedactionFilter(logging.Filter):
     def filter(self, record):

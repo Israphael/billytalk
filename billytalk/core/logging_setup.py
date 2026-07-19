@@ -13,6 +13,7 @@ history table and never in ``core.log``.
 
 from __future__ import annotations
 
+import http.client
 import logging
 import logging.handlers
 from pathlib import Path
@@ -133,5 +134,15 @@ def configure_logging(log_dir: Path, *, level: int = logging.INFO) -> logging.Lo
 
     for name in NOISY_THIRD_PARTY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    # Spec §13's second startup duty in the same bullet as the logger pins:
+    # http.client emits its debug output through bare print(), not logging, so
+    # the WARNING pin above is a no-op for it — debuglevel=1 set anywhere in
+    # the process would print every Groq request (Authorization header and the
+    # multipart body that IS the user's speech) past every redaction we have.
+    # Resetting beats refusing to start: the point is that the channel closes.
+    if http.client.HTTPConnection.debuglevel != 0:
+        http.client.HTTPConnection.debuglevel = 0
+        root.warning("http.client debuglevel was nonzero at startup; reset to 0")
 
     return root

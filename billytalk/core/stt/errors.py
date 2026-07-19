@@ -87,6 +87,18 @@ class NetworkDown(TranscriptionError):
         super().__init__(ErrorCode.NETWORK_DOWN, RetryAdvice.ENQUEUE, message)
 
 
+class AudioUnreadable(TranscriptionError):
+    """The clip file is gone or unreadable — re-reading can never succeed.
+
+    Raised instead of letting a raw ``OSError`` escape (harness §12: every
+    failure path returns a taxonomy code; an executor-swallowed OSError wedges
+    the row in ``pending_*`` for the rest of the session). The message never
+    carries the path."""
+
+    def __init__(self) -> None:
+        super().__init__(ErrorCode.PROVIDER_ERROR, RetryAdvice.NEVER, "audio file unreadable")
+
+
 class ProviderUnavailable(TranscriptionError):
     """5xx, or a 4xx we cannot act on: the service, not the network."""
 

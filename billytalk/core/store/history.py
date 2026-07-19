@@ -269,15 +269,33 @@ class HistoryStore:
         return [PendingRow(*row) for row in rows]
 
     def search(self, query: str, *, limit: int = 50, offset: int = 0) -> list[sqlite3.Row]:
-        """FTS5 search over the final text (harness §4: FTS, not LIKE)."""
-        return self._conn.execute(
-            """
-            SELECT h.* FROM history_fts f JOIN history h ON h.id = f.rowid
-             WHERE history_fts MATCH ?
-             ORDER BY h.created_at DESC LIMIT ? OFFSET ?
-            """,
-            (query, limit, offset),
-        ).fetchall()
+        """FTS5 search over the final text (harness §4: FTS, not LIKE).
+
+        The query is neutralised before ``MATCH``: raw FTS5 syntax turns
+        everyday input into an ``OperationalError`` whose *message* carries the
+        user's words — «кое-что» raises ``no such column: что`` — and search
+        terms are transcript substrings, which spec §13 forbids in any log.
+        The RedactionFilter is structurally blind to words inside a stdlib
+        exception string, so the words must never enter one. Users type words,
+        not FTS operators; each whitespace token becomes a quoted phrase.
+        """
+        tokens = query.split()
+        if not tokens:
+            return []
+        safe = " ".join('"' + token.replace('"', '""') + '"' for token in tokens)
+        try:
+            return self._conn.execute(
+                """
+                SELECT h.* FROM history_fts f JOIN history h ON h.id = f.rowid
+                 WHERE history_fts MATCH ?
+                 ORDER BY h.created_at DESC LIMIT ? OFFSET ?
+                """,
+                (safe, limit, offset),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # Belt and braces: whatever still slipped past the quoting must
+            # not escape carrying the user's words. No results is a safe answer.
+            return []
 
     def recent(self, *, limit: int = 50, offset: int = 0) -> list[sqlite3.Row]:
         return self._conn.execute(

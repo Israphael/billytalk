@@ -59,6 +59,23 @@ def test_release_after_unbinding_still_follows_pairing() -> None:
     assert up.event is None, "but an unbound code no longer reports"
 
 
+def test_tracks_reflects_pending_edge_state() -> None:
+    """The ctypes gate routes an edge to EdgeLogic when the code is bound OR
+    tracked — gating on the current bound set alone let a mid-hold rebinding
+    deliver an orphaned release to the app (review round 1)."""
+    edges = EdgeLogic()
+    assert not edges.tracks(PTT)
+
+    edges.on_edge(PTT, pressed=True, now_ms=0, snapshot=ARMED)
+    assert edges.tracks(PTT), "a swallowed press is pending state"
+
+    edges.on_edge(PTT, pressed=False, now_ms=50, snapshot=ARMED)
+    assert not edges.tracks(PTT), "the pair closed; nothing pending"
+
+    foreign = EdgeLogic(already_down=frozenset({PTT}))
+    assert foreign.tracks(PTT), "a foreign mark is pending state too"
+
+
 # --------------------------------------------------------------------------- #
 # foreign keys and auto-repeat
 # --------------------------------------------------------------------------- #

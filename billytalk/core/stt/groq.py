@@ -39,6 +39,7 @@ from .base import (
     TranscriptionResult,
 )
 from .errors import (
+    AudioUnreadable,
     KeyInvalid,
     NetworkDown,
     NoApiKey,
@@ -141,7 +142,14 @@ class GroqProvider:
         if not key:
             raise NoApiKey()
 
-        flac = clip.path.read_bytes()
+        try:
+            flac = clip.path.read_bytes()
+        except OSError:
+            # Evicted at the cap, deleted by hand, or a transient sharing
+            # violation: a raw OSError would be swallowed by the worker pool
+            # and wedge the row in pending_* for the session (harness §12 —
+            # every failure path returns a taxonomy code).
+            raise AudioUnreadable() from None
         body, content_type = build_multipart(
             flac=flac,
             filename=clip.path.name,
@@ -165,8 +173,11 @@ class GroqProvider:
             if not pooled.reused:
                 raise
             # A reused keep-alive died mid-request: the ordinary end of an idle
-            # connection, not an outage. One silent retry on a fresh socket.
-            fresh = self._pool.acquire()
+            # connection, not an outage. One silent retry on a genuinely fresh
+            # socket — acquire() would pop another idle keep-alive that likely
+            # died with the first (VPN switch kills them all), turning routine
+            # socket death into a false outage.
+            fresh = self._pool.acquire_fresh()
             try:
                 status, payload, response_headers = self._send(fresh.raw, body, headers)
             except NetworkDown:
@@ -180,10 +191,18 @@ class GroqProvider:
         latency_ms = int((self._clock() - started) * 1000)
         self._raise_for_status(status, response_headers)
 
+        parse_failed = False
         try:
             text = str(json.loads(payload.decode("utf-8")).get("text", ""))
-        except (ValueError, UnicodeDecodeError) as exc:
-            raise ProviderUnavailable(status) from exc
+        except (ValueError, UnicodeDecodeError):
+            # Never chain: at status 200 the payload IS the transcript, and a
+            # UnicodeDecodeError/JSONDecodeError object carries it whole in
+            # .object/.doc — chained onto the raised error it would ride into
+            # every repr of the exception (spec §13). Raised outside the
+            # except block so __context__ stays empty too.
+            parse_failed = True
+        if parse_failed:
+            raise ProviderUnavailable(status)
 
         return TranscriptionResult(
             text=Transcript(text),

@@ -17,7 +17,7 @@ clock — so the whole policy is testable with synthesised signals.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
 import numpy as np
@@ -44,11 +44,15 @@ class TrimResult:
     clip keeps its **original** samples — spec §4 records every press, and the
     audio file should hold what the microphone actually heard, not a zero-length
     artefact of our own thresholding.
+
+    ``samples`` is excluded from the repr (spec §13: audio is on the never-log
+    list, and a dataclass auto-repr of an ndarray prints actual sample values —
+    a debug line would sail past the RedactionFilter otherwise).
     """
 
-    samples: np.ndarray
-    is_empty: bool
-    speech_span_ms: tuple[int, int] | None
+    samples: np.ndarray = field(repr=False)
+    is_empty: bool = False
+    speech_span_ms: tuple[int, int] | None = None
 
 
 def trim_silence(
@@ -70,7 +74,21 @@ def trim_silence(
         return TrimResult(samples=flat, is_empty=True, speech_span_ms=None)
 
     frame_len = max(1, sample_rate * frame_ms // 1000)
-    frame_count = max(1, len(flat) // frame_len)
+    if len(flat) < frame_len:
+        # Shorter than one frame: a device yanked after its first PortAudio
+        # block, a headset dying mid-wake. This sits on the spec §3 durability
+        # path — StopCapture → trim → FLAC → INSERT — so it must classify, not
+        # crash (review round 1, critical: reshape(1, 320) on 160 samples was a
+        # ValueError that unwound the whole driver thread). Judge the fragment
+        # by the same peak-vs-floor rule the empty verdict uses.
+        peak = float(np.max(np.abs(flat)))
+        if peak <= _amplitude(ABSOLUTE_FLOOR_DBFS):
+            return TrimResult(samples=flat, is_empty=True, speech_span_ms=None)
+        return TrimResult(
+            samples=flat, is_empty=False,
+            speech_span_ms=(0, len(flat) * 1000 // sample_rate),
+        )
+    frame_count = len(flat) // frame_len
     usable = flat[: frame_count * frame_len].astype(np.float64)
     frames = usable.reshape(frame_count, frame_len)
     rms = np.sqrt(np.mean(frames * frames, axis=1))

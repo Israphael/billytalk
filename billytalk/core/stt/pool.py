@@ -57,7 +57,13 @@ class WarmConnectionPool:
         self._idle: list[tuple[http.client.HTTPSConnection, float]] = []
 
     def _default_factory(self) -> http.client.HTTPSConnection:
-        return http.client.HTTPSConnection(self._host, timeout=self._timeout_s)
+        conn = http.client.HTTPSConnection(self._host, timeout=self._timeout_s)
+        # Belt and braces under spec §13: these are the connections that carry
+        # the key and the audio, and debuglevel prints via bare print(), past
+        # every logging filter. configure_logging resets the class attribute;
+        # this pins the instance even if something flips it later.
+        conn.set_debuglevel(0)
+        return conn
 
     def warm(self) -> None:
         """Pre-pay the TLS handshake so the next dictation does not.
@@ -85,6 +91,16 @@ class WarmConnectionPool:
             if self._idle:
                 raw, _ = self._idle.pop()
                 return PooledConnection(raw, reused=True)
+        return PooledConnection(self._factory(), reused=False)
+
+    def acquire_fresh(self) -> PooledConnection:
+        """A factory-fresh connection, bypassing the idle list.
+
+        The stale-keep-alive retry must run on a socket that did not share the
+        dead one's fate: with parallel transcriptions the pool lawfully holds
+        several idle connections, and a VPN switch or Wi-Fi roam kills them
+        all at once — popping another idle one turns a routine socket death
+        into a false network outage (review round 1)."""
         return PooledConnection(self._factory(), reused=False)
 
     def release(self, raw: http.client.HTTPSConnection) -> None:

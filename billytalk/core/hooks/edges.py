@@ -78,6 +78,22 @@ class EdgeLogic:
         self._keys_down: set[int] = set()
         self._last_esc_ms: int | None = None
 
+    def tracks(self, code: int) -> bool:
+        """Does this code have pending edge state — a held key, a swallowed
+        press, a foreign mark?
+
+        The ctypes layer must route an edge here when the code is bound OR
+        tracked: gating on the current bound set alone delivers an orphaned
+        release when a binding changes mid-hold — the exact defect the pairing
+        rule exists to prevent (review round 1). Hook-thread confined, like
+        everything else on this class.
+        """
+        return (
+            code in self._keys_down
+            or code in self._suppressed_down
+            or code in self._foreign_down
+        )
+
     def on_edge(self, code: int, *, pressed: bool, now_ms: int, snapshot: HookSnapshot) -> EdgeDecision:
         """Decide for one edge of one interesting code (a bound code or Esc).
 

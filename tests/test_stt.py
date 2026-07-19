@@ -78,9 +78,20 @@ def test_prompt_over_budget_drops_terms_from_the_front() -> None:
     terms = [f"term{i:03d}" for i in range(200)] + ["BillyTalk"]
     prompt = build_prompt(terms, "en")
     assert prompt is not None
-    assert len(prompt) <= 700
+    assert len(prompt) <= 500, "Latin budget: ~2.43 chars/token against the 224 cap"
     assert "BillyTalk" in prompt, "the tail is the valuable part"
     assert "term000" not in prompt
+
+
+def test_cyrillic_prompt_gets_the_tighter_budget() -> None:
+    """Measured with the real Whisper tokenizer (review round 1): 492 Cyrillic
+    chars already exceed 224 tokens — the old 700-char proxy silently handed
+    Whisper a decapitated prompt ending in a bare list."""
+    terms = [f"сервер{i:03d}" for i in range(100)] + ["БиллиТолк"]
+    prompt = build_prompt(terms, "ru")
+    assert prompt is not None
+    assert len(prompt) <= 420
+    assert "БиллиТолк" in prompt
 
 
 def test_no_terms_no_prompt() -> None:
@@ -300,3 +311,49 @@ def test_dead_fresh_connection_is_a_real_network_error(tmp_path: Path) -> None:
     with pytest.raises(NetworkDown):
         provider.transcribe(clip, OPTIONS)
     assert len(connections) == 1, "no retry: a fresh socket dying is an outage"
+
+
+def test_acquire_fresh_bypasses_the_idle_list() -> None:
+    """The stale-keep-alive retry must not pop another idle connection: a VPN
+    switch kills every idle socket at once, and a second reused corpse would
+    turn routine socket death into a false outage (review round 1)."""
+    made: list[FakeRawConnection] = []
+
+    def factory() -> FakeRawConnection:
+        conn = FakeRawConnection()
+        made.append(conn)
+        return conn
+
+    pool = WarmConnectionPool("example.test", factory=factory, clock=lambda: 0.0)  # type: ignore[arg-type]
+    pool.warm()
+    pool.release(FakeRawConnection())  # a second idle keep-alive
+
+    fresh = pool.acquire_fresh()
+    assert fresh.raw is made[-1], "factory-built, not popped from idle"
+    assert not fresh.reused
+
+
+def test_missing_audio_file_is_a_taxonomy_error_not_an_oserror(tmp_path: Path) -> None:
+    """harness §12: a raw OSError would be swallowed by the worker pool and
+    wedge the row in pending_* for the whole session."""
+    from billytalk.core.stt.errors import AudioUnreadable
+
+    provider, connections, _clip = _provider([], tmp_path)
+    ghost = AudioClip(path=tmp_path / "vanished.flac", duration_ms=500)
+    with pytest.raises(AudioUnreadable) as excinfo:
+        provider.transcribe(ghost, OPTIONS)
+    assert excinfo.value.advice is RetryAdvice.NEVER, "re-reading can never succeed"
+    assert "vanished" not in str(excinfo.value), "the path stays out of the message"
+    assert connections == [], "no connection was spent on it"
+
+
+def test_parse_failure_never_chains_the_transcript_payload(tmp_path: Path) -> None:
+    """At status 200 the payload IS the transcript; a chained UnicodeDecodeError
+    carries it whole in .object, riding into every repr (spec §13)."""
+    mangled = "секретные слова".encode()[:-1]  # truncated multi-byte tail
+    provider, _, clip = _provider([ScriptedResponse(200, mangled, {})], tmp_path)
+    with pytest.raises(ProviderUnavailable) as excinfo:
+        provider.transcribe(clip, OPTIONS)
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert "секретные" not in repr(excinfo.value)

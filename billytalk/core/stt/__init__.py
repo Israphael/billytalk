@@ -16,6 +16,7 @@ from .base import (
     build_prompt,
 )
 from .errors import (
+    AudioUnreadable,
     KeyInvalid,
     NetworkDown,
     NoApiKey,
@@ -36,6 +37,7 @@ __all__ = [
     "build_prompt",
     "TranscriptionError",
     "RetryAdvice",
+    "AudioUnreadable",
     "NoApiKey",
     "KeyInvalid",
     "RateLimited",

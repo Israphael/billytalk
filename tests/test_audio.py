@@ -97,6 +97,30 @@ def test_trim_preserves_dtype_and_rejects_wrong_dtype() -> None:
         trim_silence(_tone(100, db=-12.0).astype(np.float32))
 
 
+def test_sub_frame_clips_classify_instead_of_crashing() -> None:
+    """Review round 1, critical: a clip shorter than one 20 ms frame sits on
+    the spec §3 durability path (device yanked after its first PortAudio
+    block) and used to raise ValueError, unwinding the whole driver thread."""
+    for n in (1, 159, 160, 319):
+        quiet = np.zeros(n, dtype=np.int16)
+        result = trim_silence(quiet)
+        assert result.is_empty, f"{n} silent samples must be empty, not a crash"
+        assert len(result.samples) == n, "kept verbatim, like every empty clip"
+
+    loud = np.zeros(200, dtype=np.int16)
+    loud[50] = np.int16(16000)
+    result = trim_silence(loud)
+    assert not result.is_empty, "peak above the floor: never discarded, even sub-frame"
+    assert len(result.samples) == 200
+
+
+def test_trim_result_repr_never_renders_samples() -> None:
+    """Spec §13: audio heads the never-log list, and a dataclass auto-repr of
+    an ndarray prints actual sample values past the RedactionFilter."""
+    result = trim_silence(_tone(100, db=-12.0))
+    assert "samples" not in repr(result)
+
+
 def test_padding_never_reaches_outside_the_clip() -> None:
     clip = _tone(100, db=-12.0)  # speech starts at sample 0
     result = trim_silence(clip)

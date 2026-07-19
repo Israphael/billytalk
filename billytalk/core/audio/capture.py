@@ -59,6 +59,7 @@ class CaptureSession:
         self._lock = threading.Lock()
         self._started_fired = False
         self._stream: object | None = None
+        self.overflows = 0
 
     @property
     def sample_rate(self) -> int:
@@ -78,10 +79,20 @@ class CaptureSession:
             )
             stream.start()
         except sd.PortAudioError as exc:
-            # Distinguishing a privacy block from a busy device out of a
-            # PortAudio error is unreliable; MVP-0 reports mic_busy, whose
-            # user action ("pick another device") is the safer of the two.
-            raise CaptureError(ErrorCode.MIC_BUSY, str(exc)) from exc
+            # Best-effort split of harness §7's two rows: a WASAPI privacy
+            # block surfaces E_ACCESSDENIED (0x80070005) in the error text,
+            # and its remedy ("открыть параметры приватности") is different
+            # from mic_busy's ("выбрать другое устройство"). Anything else is
+            # mic_busy. Caveat, unmeasured: some builds reportedly deliver
+            # silence instead of an error on a privacy block — that path
+            # cannot be told apart here at all.
+            message = str(exc)
+            lowered = message.lower()
+            denied = "0x80070005" in lowered or (
+                "access" in lowered and "denied" in lowered
+            )
+            code = ErrorCode.MIC_DENIED if denied else ErrorCode.MIC_BUSY
+            raise CaptureError(code, message) from exc
         self._stream = stream
 
     def _callback(self, indata: np.ndarray, frames: int, time_info: object, status: object) -> None:
@@ -91,9 +102,12 @@ class CaptureSession:
             self._started_fired = True
             if self._on_started is not None:
                 self._on_started()
-        if status and self._on_error is not None:
-            # Overflow drops frames but the recording lives; report, don't stop.
-            self._on_error(ErrorCode.MIC_BUSY)
+        if status:
+            # An overflow drops frames but the recording lives. It is counted,
+            # never reported as MicError: that event finalises a Recording
+            # (spec §4), and cutting a dictation short over a dropped buffer
+            # would be the cure killing the patient (review round 1).
+            self.overflows += 1
 
     def stop(self, *, tail_ms: int = TAIL_MS) -> np.ndarray:
         """Record the tail, close the stream, hand back everything captured.

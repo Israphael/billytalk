@@ -23,9 +23,15 @@ __all__ = [
     "build_prompt",
 ]
 
-PROMPT_CHAR_BUDGET = 700
-"""Spec §6 caps the prompt at 224 tokens; ~700 characters stays safely under it
-for both alphabets without shipping a tokenizer."""
+PROMPT_CHAR_BUDGET_CYRILLIC = 420
+PROMPT_CHAR_BUDGET_LATIN = 500
+"""Spec §6 caps the prompt at 224 tokens. Character budgets, measured against
+the real Whisper multilingual tokenizer (review round 1): 492 Cyrillic chars
+already encode to 239 tokens (~2.06 chars/token → 224 ≈ 461 chars), a Latin
+term list runs ~2.43 chars/token (224 ≈ 545 chars). Whisper silently keeps the
+FINAL 224 tokens, so an over-budget prompt loses its sentence opening and
+degrades into the bare comma list that measurably strips punctuation — the
+budget must err low. No tokenizer is shipped; these margins carry the slack."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +116,12 @@ def build_prompt(terms: list[str], language: str) -> str | None:
     kept = list(terms)
     while kept:
         sentence = template.format(terms=", ".join(kept))
-        if len(sentence) <= PROMPT_CHAR_BUDGET:
+        budget = (
+            PROMPT_CHAR_BUDGET_CYRILLIC
+            if any("Ѐ" <= ch <= "ӿ" for ch in sentence)
+            else PROMPT_CHAR_BUDGET_LATIN
+        )
+        if len(sentence) <= budget:
             return sentence
         kept.pop(0)
     return None
