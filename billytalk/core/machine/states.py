@@ -501,12 +501,13 @@ def step(state: State, event: Event, now: int) -> tuple[State, tuple[Effect, ...
             if not active.deliver:
                 # Max hold, or dictation switched off mid-recording. The text still
                 # reaches the user through the clipboard and the history — it just
-                # never lands in a window on its own.
+                # never lands in a window on its own. Status is `withheld` (spec §10):
+                # this is deliberate non-delivery, not a paste that failed.
                 return _terminal(
                     state,
                     (
                         WriteClipboard(active.seq),
-                        WriteHistory(active.seq, DeliveryStatus.LEFT_ON_CLIPBOARD),
+                        WriteHistory(active.seq, DeliveryStatus.WITHHELD),
                         PlayCue(Cue.CLIPBOARD),
                     ),
                 )

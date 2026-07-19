@@ -42,7 +42,7 @@ CREATE TABLE history (
   audio_path        TEXT,
   audio_release_at  INTEGER,
   CHECK (delivery_status IN (
-    'pending_transcribe','pending_retry','inserted','left_on_clipboard',
+    'pending_transcribe','pending_retry','inserted','left_on_clipboard','withheld',
     'focus_lost','verify_impossible','blocked_secure','transcribe_failed',
     'cancelled','too_short','empty'))
 );

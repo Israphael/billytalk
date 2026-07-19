@@ -195,8 +195,10 @@ CREATE TABLE history (
   polished          INTEGER NOT NULL DEFAULT 0,
   audio_path        TEXT,                      -- NULL после уборки
   audio_release_at  INTEGER,                   -- отсчёт часа; NULL = удерживать
+  -- ⚠️ withheld добавлен при сборке (спека §10): «расшифровано, вставка намеренно
+  -- не делалась». В ранней редакции его в CHECK не было, хотя спека §10 объявляет.
   CHECK (delivery_status IN (
-    'pending_transcribe','pending_retry','inserted','left_on_clipboard',
+    'pending_transcribe','pending_retry','inserted','left_on_clipboard','withheld',
     'focus_lost','verify_impossible','blocked_secure','transcribe_failed',
     'cancelled','too_short','empty'))
 );
@@ -239,9 +241,11 @@ CREATE TABLE dictionary (
 
 **FTS5, не `LIKE`** — история бессрочна, поиск обязан оставаться быстрым.
 
-`delivery_status` ∈ `inserted` · `left_on_clipboard` · `focus_lost` ·
-`verify_impossible` · `blocked_secure` · `transcribe_failed` · `pending_retry` ·
-`cancelled` · `too_short`
+`delivery_status` ∈ `pending_transcribe` · `pending_retry` · `inserted` ·
+`left_on_clipboard` · `withheld` · `focus_lost` · `verify_impossible` ·
+`blocked_secure` · `transcribe_failed` · `cancelled` · `too_short` · `empty`
+(перечень совпадает с CHECK и со спекой §10; ранняя редакция этого списка
+пропускала `pending_transcribe`, `withheld` и `empty`)
 
 **Миграции:** `PRAGMA user_version`, последовательные функции `migrate_1_to_2` и т. д.
 Схема заводится сразу целиком, чтобы MVP-0 не требовал миграции при добавлении режима 2.

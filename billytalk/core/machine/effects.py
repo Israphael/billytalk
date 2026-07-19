@@ -62,6 +62,11 @@ class DeliveryStatus(Enum):
     PENDING_RETRY = "pending_retry"
     INSERTED = "inserted"
     LEFT_ON_CLIPBOARD = "left_on_clipboard"
+    WITHHELD = "withheld"
+    """Transcribed, deliberately not pasted (spec §10): the max-hold fuse fired or the
+    user switched dictation off mid-recording. Distinct from LEFT_ON_CLIPBOARD, which
+    is a paste that was *attempted* and failed — conflating the two makes delivery
+    debugging impossible."""
     FOCUS_LOST = "focus_lost"
     VERIFY_IMPOSSIBLE = "verify_impossible"
     BLOCKED_SECURE = "blocked_secure"

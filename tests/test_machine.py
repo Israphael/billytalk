@@ -338,7 +338,10 @@ def test_max_hold_delivers_to_history_not_paste() -> None:
     effects = sim.send(TranscribeOk(1))
     assert sim.state.phase is Phase.Idle
     assert WriteClipboard(1) in effects
-    assert WriteHistory(1, DeliveryStatus.LEFT_ON_CLIPBOARD) in effects
+    assert WriteHistory(1, DeliveryStatus.WITHHELD) in effects, (
+        "spec §10: deliberate non-delivery is `withheld`, not `left_on_clipboard` — "
+        "conflating it with a failed paste makes delivery debugging impossible"
+    )
     assert Insert not in types(effects), "the fuse forbids the paste, not the text"
 
 
@@ -620,6 +623,9 @@ def test_disabling_during_recording_saves_but_does_not_paste() -> None:
     effects = sim.send(TranscribeOk(1))
     assert Insert not in types(effects)
     assert WriteClipboard(1) in effects
+    assert WriteHistory(1, DeliveryStatus.WITHHELD) in effects, (
+        "switched off from the tray mid-recording: transcribed, kept, deliberately not pasted"
+    )
 
 
 def test_exit_during_recording_saves_first() -> None:
