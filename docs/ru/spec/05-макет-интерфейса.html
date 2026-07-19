@@ -1,0 +1,575 @@
+<title>BillyTalk — макет интерфейса</title>
+<style>
+  :root{
+    --pg-bg:#f5f6f8; --pg-fg:#1a1c20; --pg-mut:#5b6371; --pg-line:#e2e5ea;
+    --pg-card:#ffffff; --pg-acc:#005fb8; --pg-acc-fg:#ffffff; --pg-code:#eef1f5;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --pg-bg:#1b1d21; --pg-fg:#e8eaed; --pg-mut:#9aa3b0; --pg-line:#31353c;
+           --pg-card:#24272c; --pg-acc:#60cdff; --pg-acc-fg:#00243c; --pg-code:#2a2e34; }
+  }
+  :root[data-theme="dark"]{ --pg-bg:#1b1d21; --pg-fg:#e8eaed; --pg-mut:#9aa3b0; --pg-line:#31353c;
+           --pg-card:#24272c; --pg-acc:#60cdff; --pg-acc-fg:#00243c; --pg-code:#2a2e34; }
+  :root[data-theme="light"]{ --pg-bg:#f5f6f8; --pg-fg:#1a1c20; --pg-mut:#5b6371; --pg-line:#e2e5ea;
+           --pg-card:#ffffff; --pg-acc:#005fb8; --pg-acc-fg:#ffffff; --pg-code:#eef1f5; }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--pg-bg);color:var(--pg-fg);
+       font:14px/1.55 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;}
+  .wrap{max-width:1020px;margin:0 auto;padding:0 20px 80px}
+  a{color:var(--pg-acc)}
+
+  header.page{padding:34px 0 10px}
+  .eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--pg-mut);font-weight:600}
+  h1{font:600 26px/1.25 "Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;margin:6px 0 8px;text-wrap:balance}
+  .lede{color:var(--pg-mut);max-width:64ch;margin:0}
+
+  .ctrlbar{position:sticky;top:0;z-index:50;background:var(--pg-bg);border-bottom:1px solid var(--pg-line);
+           padding:12px 0;margin-top:18px;display:flex;flex-wrap:wrap;gap:14px;align-items:center}
+  .seg{display:inline-flex;border:1px solid var(--pg-line);border-radius:8px;overflow:hidden;background:var(--pg-card)}
+  .seg button{border:0;background:transparent;color:var(--pg-fg);padding:7px 16px;font:inherit;cursor:pointer}
+  .seg button:focus-visible{outline:2px solid var(--pg-acc);outline-offset:-2px}
+  .seg button.on{background:var(--pg-acc);color:var(--pg-acc-fg);font-weight:600}
+  .diffchips{display:flex;flex-wrap:wrap;gap:8px;margin-left:auto}
+  .chip{font-size:12px;color:var(--pg-mut);background:var(--pg-code);border-radius:20px;padding:4px 12px;white-space:nowrap}
+  .chip b{color:var(--pg-fg);font-weight:600}
+
+  section.block{margin-top:46px}
+  .block h2{font:600 19px/1.3 "Segoe UI Variable Display","Segoe UI",sans-serif;margin:4px 0 4px}
+  .block .why{color:var(--pg-mut);margin:0 0 18px;max-width:70ch}
+  .mockwrap{overflow-x:auto;padding:26px 8px 34px;display:flex;justify-content:center}
+  .note{font-size:12.5px;color:var(--pg-mut);border-left:2px solid var(--pg-line);padding:2px 0 2px 12px;max-width:70ch}
+  .note b{color:var(--pg-fg)}
+
+  /* ============ MOCK TOKENS ============ */
+  .mock{ --r-win:8px; --r-card:6px; --r-ctl:4px;
+    --bg:#f3f3f3; --bg2:#ebebeb; --card:#fbfbfb; --card2:#f6f6f6;
+    --line:#e5e5e5; --stroke:#d0d0d0; --fg:#1b1b1b; --mut:#5d5d5d;
+    --acc:#005fb8; --acc-fg:#ffffff; --hov:rgba(0,0,0,.045); --sel:rgba(0,95,184,.09);
+    --tb:transparent; --tb-fg:#1b1b1b;
+    --btn:#fdfdfd; --btn-line:#d0d0d0; --btn-edge:#bcbcbc;
+    --in:#ffffff; --shadow:0 24px 60px rgba(0,0,0,.22), 0 4px 14px rgba(0,0,0,.12);
+    --ok:#0f7b0f; --ok-bg:#e6f2e6; --warn:#9d5d00; --warn-bg:#fdf3e4;
+    --err:#c42b1c; --err-bg:#fbeae8; --neu:#5d5d5d; --neu-bg:#ececec;
+    font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+    color:var(--fg); font-size:13px; line-height:1.45;
+  }
+  .mock.t-dark{
+    --bg:#202020; --bg2:#1b1b1b; --card:#2b2b2b; --card2:#323232;
+    --line:#363636; --stroke:#454545; --fg:#ffffff; --mut:#a9a9a9;
+    --acc:#60cdff; --acc-fg:#00243c; --hov:rgba(255,255,255,.055); --sel:rgba(96,205,255,.12);
+    --tb-fg:#ffffff;
+    --btn:#333333; --btn-line:#454545; --btn-edge:#3d3d3d;
+    --in:#242424; --shadow:0 24px 60px rgba(0,0,0,.55), 0 4px 14px rgba(0,0,0,.4);
+    --ok:#6ccb5f; --ok-bg:#233723; --warn:#e0b256; --warn-bg:#3a3020;
+    --err:#ff99a4; --err-bg:#442726; --neu:#a9a9a9; --neu-bg:#333333;
+  }
+  .mock.os10{ --r-win:0; --r-card:0; --r-ctl:2px;
+    --bg:#ffffff; --bg2:#f2f2f2; --card:#ffffff; --card2:#f7f7f7;
+    --line:#e5e5e5; --stroke:#cccccc; --acc:#0078d7; --acc-fg:#ffffff;
+    --tb:#ffffff; --tb-fg:#000000;
+    --btn:#e1e1e1; --btn-line:#adadad; --btn-edge:#adadad;
+    --shadow:0 14px 34px rgba(0,0,0,.28);
+    font-family:"Segoe UI",Tahoma,system-ui,sans-serif;
+  }
+  .mock.os10.t-dark{
+    --bg:#1f1f1f; --bg2:#171717; --card:#1f1f1f; --card2:#2b2b2b;
+    --line:#333333; --stroke:#4a4a4a; --fg:#ffffff; --mut:#a0a0a0;
+    --acc:#0078d7; --acc-fg:#ffffff; --hov:rgba(255,255,255,.06); --sel:rgba(0,120,215,.25);
+    --tb:#1f1f1f; --tb-fg:#ffffff;
+    --btn:#333333; --btn-line:#555555; --btn-edge:#555555; --in:#252525;
+  }
+
+  /* ============ WINDOW CHROME ============ */
+  .win{width:840px;max-width:100%;background:var(--bg);border-radius:var(--r-win);
+       box-shadow:var(--shadow);border:1px solid rgba(0,0,0,.25);overflow:hidden}
+  .t-dark .win{border-color:rgba(255,255,255,.14)}
+  .os10 .win{border-color:#707070}
+  .tbar{display:flex;align-items:center;height:36px;background:var(--tb);color:var(--tb-fg);user-select:none}
+  .os10 .tbar{height:32px;border-bottom:1px solid var(--line)}
+  .tbar .ticon{width:16px;height:16px;margin:0 8px 0 12px;border-radius:3px;flex:none;
+    background:linear-gradient(135deg,#0aa66a,#067a4c);display:grid;place-items:center;color:#fff;font-size:9px;font-weight:700}
+  .tbar .ttl{font-size:12px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .caps{display:flex;height:100%;flex:none}
+  .cap{width:46px;display:grid;place-items:center;color:var(--tb-fg);opacity:.85}
+  .cap:hover{background:var(--hov)}
+  .cap.close:hover{background:#c42b1c;color:#fff;opacity:1}
+  .cap .gmin{width:10px;height:1px;background:currentColor}
+  .cap .gmax{width:9px;height:9px;border:1px solid currentColor;border-radius:2px}
+  .os10 .cap .gmax{border-radius:0}
+  .cap .gx{font-size:12px;line-height:1}
+
+  /* ============ CONTROLS ============ */
+  .btn{display:inline-flex;align-items:center;gap:6px;background:var(--btn);color:var(--fg);
+    border:1px solid var(--btn-line);border-bottom-color:var(--btn-edge);
+    border-radius:var(--r-ctl);padding:5px 14px;font:inherit;font-size:13px;cursor:pointer;white-space:nowrap}
+  .btn:hover{background:var(--card2)}
+  .btn.primary{background:var(--acc);color:var(--acc-fg);border-color:transparent;font-weight:600}
+  .btn.subtle{background:transparent;border-color:transparent}
+  .btn.subtle:hover{background:var(--hov)}
+  .btn.danger{color:var(--err)}
+  .os10 .btn{padding:4px 14px}
+  .combo{display:inline-flex;align-items:center;gap:20px;background:var(--in);border:1px solid var(--stroke);
+    border-radius:var(--r-ctl);padding:5px 10px 5px 12px;font-size:13px;min-width:150px;justify-content:space-between}
+  .combo::after{content:"";width:7px;height:7px;border-right:1.4px solid var(--mut);border-bottom:1.4px solid var(--mut);
+    transform:rotate(45deg) translateY(-2px)}
+  .input{background:var(--in);border:1px solid var(--stroke);border-radius:var(--r-ctl);
+    padding:6px 12px;font:inherit;font-size:13px;color:var(--fg);width:100%}
+  .os11 .input, .os11 .combo{border-bottom:1px solid var(--mut)}
+  .kbd{display:inline-block;background:var(--card2);border:1px solid var(--stroke);border-bottom-width:2px;
+    border-radius:5px;padding:2px 9px;font-size:12px;font-weight:600;white-space:nowrap}
+  .os10 .kbd{border-radius:2px}
+
+  .tgl{width:40px;height:20px;border-radius:20px;border:1px solid var(--mut);position:relative;flex:none;background:transparent}
+  .tgl::after{content:"";position:absolute;top:3px;left:3px;width:12px;height:12px;border-radius:50%;background:var(--mut);transition:.15s}
+  .tgl.on{background:var(--acc);border-color:var(--acc)}
+  .tgl.on::after{left:23px;background:var(--acc-fg)}
+  .os10 .tgl, .os10 .tgl::after{border-radius:20px}
+  .tgl.locked{opacity:.55}
+
+  .badge{display:inline-block;font-size:11.5px;font-weight:600;border-radius:20px;padding:2px 10px;white-space:nowrap}
+  .b-ok{color:var(--ok);background:var(--ok-bg)} .b-warn{color:var(--warn);background:var(--warn-bg)}
+  .b-err{color:var(--err);background:var(--err-bg)} .b-neu{color:var(--neu);background:var(--neu-bg)}
+  .os10 .badge{border-radius:2px}
+
+  .infobar{display:flex;gap:10px;align-items:flex-start;border-radius:var(--r-card);
+    padding:10px 14px;font-size:12.5px;border:1px solid var(--stroke)}
+  .infobar.warn{background:var(--warn-bg);border-color:transparent}
+  .infobar .sic{font-weight:700;flex:none}
+  .infobar.warn .sic{color:var(--warn)}
+
+  /* ============ SETTINGS ============ */
+  .set-body{display:flex;min-height:470px}
+  .nav{width:218px;flex:none;padding:10px 8px;display:flex;flex-direction:column;gap:2px}
+  .os10 .nav{background:var(--bg2)}
+  .nav button{display:flex;align-items:center;gap:11px;border:0;background:transparent;color:var(--fg);
+    font:inherit;font-size:13px;padding:8px 12px;border-radius:var(--r-ctl);cursor:pointer;text-align:left;position:relative}
+  .nav button:hover{background:var(--hov)}
+  .nav button.on{background:var(--hov);font-weight:600}
+  .os11 .nav button.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:3px;background:var(--acc)}
+  .os10 .nav button.on{background:var(--sel);border-left:3px solid var(--acc);border-radius:0;padding-left:9px}
+  .nav svg{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.5;opacity:.85}
+  .pane{flex:1;padding:18px 26px 26px;background:var(--bg)}
+  .os10 .pane{background:var(--card)}
+  .pane h3{font-size:17px;font-weight:600;margin:2px 0 14px}
+  .cards{display:flex;flex-direction:column;gap:4px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r-card);padding:11px 16px;
+    display:flex;align-items:center;gap:14px}
+  .os10 .card{border-width:0 0 1px 0;border-radius:0;background:transparent;padding:11px 4px}
+  .card .grow{flex:1;min-width:0}
+  .card .lbl{font-size:13px}
+  .card .sub{font-size:12px;color:var(--mut);margin-top:1px}
+  .gaphdr{font-size:12.5px;font-weight:600;color:var(--mut);margin:18px 0 6px}
+
+  table.dic{width:100%;border-collapse:collapse;font-size:12.5px}
+  .dic th{color:var(--mut);font-weight:600;text-align:left;padding:6px 10px;border-bottom:1px solid var(--stroke)}
+  .dic td{padding:7px 10px;border-bottom:1px solid var(--line)}
+  .dic .arr{color:var(--mut)}
+
+  /* ============ HISTORY ============ */
+  .hist-tools{display:flex;gap:10px;padding:12px 16px;align-items:center}
+  .hist-tools .input{max-width:300px}
+  .hlist{border-top:1px solid var(--line)}
+  .hrow{display:flex;gap:14px;align-items:center;padding:9px 16px;border-bottom:1px solid var(--line)}
+  .hrow:hover{background:var(--hov)}
+  .hrow.sel{background:var(--sel)}
+  .hrow .tm{width:52px;flex:none;color:var(--mut);font-variant-numeric:tabular-nums;font-size:12px}
+  .hrow .tx{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .hrow .app{flex:none;font-size:11.5px;color:var(--mut);background:var(--card2);
+    border:1px solid var(--line);border-radius:4px;padding:1px 8px}
+  .hrow .badge{flex:none;width:150px;text-align:center}
+  .hrow .acts{display:none;gap:6px;flex:none}
+  .hrow.sel .acts{display:flex}
+  .hfoot{display:flex;justify-content:space-between;padding:9px 16px;color:var(--mut);font-size:12px}
+
+  /* ============ WIZARD ============ */
+  .wiz{width:660px}
+  .wiz-body{display:flex;min-height:430px}
+  .rail{width:196px;flex:none;padding:22px 0 18px 22px;display:flex;flex-direction:column;gap:16px}
+  .os10 .rail{background:var(--bg2)}
+  .rstep{display:flex;gap:10px;align-items:center;font-size:12px;color:var(--mut)}
+  .rstep .dot{width:8px;height:8px;border-radius:50%;background:var(--stroke);flex:none}
+  .rstep.done .dot{background:var(--acc);opacity:.45}
+  .rstep.on{color:var(--fg);font-weight:600}
+  .rstep.on .dot{background:var(--acc);outline:3px solid var(--sel)}
+  .wpane{flex:1;padding:26px 30px 18px;display:flex;flex-direction:column;background:var(--bg)}
+  .os10 .wpane{background:var(--card)}
+  .wpane .stepno{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--mut);font-weight:600}
+  .wpane h3{font-size:19px;font-weight:600;margin:6px 0 10px;text-wrap:balance}
+  .wpane p{margin:0 0 12px;color:var(--mut);font-size:13px;max-width:52ch}
+  .wpane p b{color:var(--fg)}
+  .wstage{flex:1}
+  .wnav{display:flex;justify-content:flex-end;gap:8px;padding-top:16px;border-top:1px solid var(--line)}
+  .wnav .spacer{flex:1}
+  .meter{display:flex;gap:3px;align-items:flex-end;height:34px;margin:10px 0}
+  .meter i{width:5px;background:var(--acc);border-radius:2px;display:block}
+  .hkbig{display:flex;justify-content:center;padding:22px;border:1px dashed var(--stroke);border-radius:var(--r-card);margin:8px 0}
+  .hkbig .kbd{font-size:16px;padding:7px 18px}
+
+  /* ============ OVERLAY + TRAY ============ */
+  .deskrow{display:flex;flex-wrap:wrap;gap:34px;align-items:flex-start;justify-content:center}
+  .pillcol{display:flex;flex-direction:column;gap:16px;align-items:center}
+  .pill{display:inline-flex;align-items:center;gap:9px;background:rgba(24,24,26,.94);color:#fff;
+    border-radius:30px;padding:8px 18px;font-size:13px;box-shadow:0 8px 26px rgba(0,0,0,.4);
+    border:1px solid rgba(255,255,255,.12)}
+  .pill .dot{width:9px;height:9px;border-radius:50%;background:#e81123;animation:pulse 1.2s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  @media (prefers-reduced-motion: reduce){ .pill .dot{animation:none} }
+  .pill .bars{display:flex;gap:2px;align-items:flex-end;height:14px}
+  .pill .bars i{width:3px;background:#7ad07a;border-radius:2px;display:block}
+  .pill .tmr{font-variant-numeric:tabular-nums;color:#cfcfcf}
+  .pill.tr .dots{letter-spacing:2px;color:#8ecdf5}
+  .caplbl{font-size:11.5px;color:var(--mut)}
+
+  .traymenu{width:250px;background:var(--card);border:1px solid var(--stroke);border-radius:var(--r-win);
+    box-shadow:var(--shadow);padding:5px;font-size:13px}
+  .os10 .traymenu{border-radius:0;padding:3px 0}
+  .tmi{display:flex;align-items:center;gap:10px;padding:7px 12px;border-radius:var(--r-ctl)}
+  .os10 .tmi{border-radius:0}
+  .tmi:hover{background:var(--hov)}
+  .tmi .hot{margin-left:auto;color:var(--mut);font-size:11.5px}
+  .tmi .chk{width:14px;text-align:center;color:var(--acc);font-weight:700}
+  .tmsep{height:1px;background:var(--line);margin:5px 10px}
+  .os10 .tmsep{margin:3px 2px}
+
+  .traystates{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;margin-top:8px}
+  .tstate{display:flex;flex-direction:column;align-items:center;gap:6px;width:76px}
+  .tstate .ic{width:24px;height:24px;border-radius:6px;background:var(--card2);border:1px solid var(--line);
+    display:grid;place-items:center;position:relative}
+  .tstate .caplbl{text-align:center}
+  .micg{width:8px;height:12px;border:1.6px solid var(--fg);border-radius:5px;position:relative}
+  .micg::after{content:"";position:absolute;left:50%;bottom:-5px;transform:translateX(-50%);width:8px;height:3px;
+    border:1.6px solid var(--fg);border-top:0;border-radius:0 0 6px 6px}
+  .ic .ovr{position:absolute;right:-3px;bottom:-3px;width:11px;height:11px;border-radius:50%;
+    font-size:8px;font-weight:800;display:grid;place-items:center;color:#fff}
+
+  footer.pagefoot{margin-top:56px;border-top:1px solid var(--pg-line);padding-top:18px;color:var(--pg-mut);font-size:12.5px}
+  footer.pagefoot ul{margin:8px 0 0;padding-left:18px}
+  footer.pagefoot li{margin:3px 0}
+</style>
+
+<div class="wrap">
+<header class="page">
+  <div class="eyebrow">BillyTalk · цикл 2 · макет к утверждению</div>
+  <h1>Окна интерфейса в стилях Windows 11 и Windows 10</h1>
+  <p class="lede">Три окна (настройки, история, мастер первого запуска), плашка записи и меню трея.
+  Переключатели ниже показывают, как одна и та же раскладка выглядит на обеих системах и в обеих темах —
+  ровно так и будет работать настоящее приложение: раскладка одна, оформление берётся от ОС.</p>
+</header>
+
+<div class="ctrlbar">
+  <div class="seg" role="group" aria-label="Система">
+    <button id="os11" class="on">Windows 11</button><button id="os10">Windows 10</button>
+  </div>
+  <div class="seg" role="group" aria-label="Тема">
+    <button id="thl">Светлая</button><button id="thd">Тёмная</button>
+  </div>
+  <div class="diffchips" id="chips"></div>
+</div>
+
+<div id="mockroot" class="mock os11 t-light">
+
+<!-- ================= НАСТРОЙКИ ================= -->
+<section class="block">
+  <h2>Настройки</h2>
+  <p class="why">Раскладка «Параметров» Windows: навигация слева, справа — строки «подпись + элемент управления».
+  Навигация кликабельна — пройди все шесть разделов.</p>
+  <div class="mockwrap"><div class="win">
+    <div class="tbar"><div class="ticon">B</div><div class="ttl">BillyTalk — настройки</div>
+      <div class="caps"><div class="cap"><div class="gmin"></div></div><div class="cap"><div class="gmax"></div></div><div class="cap close"><div class="gx">✕</div></div></div>
+    </div>
+    <div class="set-body">
+      <nav class="nav" id="setnav">
+        <button class="on" data-pane="p-gen"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.6"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4"/></svg>Общие</button>
+        <button data-pane="p-keys"><svg viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8" rx="1.5"/><path d="M4 7h.01M7 7h.01M10 7h.01M12 7h.01M4.5 9.5h7"/></svg>Привязки</button>
+        <button data-pane="p-mic"><svg viewBox="0 0 16 16"><rect x="6" y="1.5" width="4" height="8" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2.5"/></svg>Микрофон</button>
+        <button data-pane="p-stt"><svg viewBox="0 0 16 16"><path d="M4.5 11.5a3.5 3.5 0 0 1 .4-7A4.4 4.4 0 0 1 13 6a2.8 2.8 0 0 1-.6 5.5z"/></svg>Расшифровка</button>
+        <button data-pane="p-dic"><svg viewBox="0 0 16 16"><path d="M3 2.5h7a2 2 0 0 1 2 2v9H5a2 2 0 0 1-2-2z"/><path d="M12 10.5H5a2 2 0 0 0 0 3"/></svg>Словарь</button>
+        <button data-pane="p-abt"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.2v3.6M8 5h.01"/></svg>О программе</button>
+      </nav>
+
+      <div class="pane" id="p-gen">
+        <h3>Общие</h3>
+        <div class="cards">
+          <div class="card"><div class="grow"><div class="lbl">Запускать при входе в Windows</div>
+            <div class="sub">Ядро стартует в трей, окна не открываются</div></div><div class="tgl on"></div></div>
+          <div class="card"><div class="grow"><div class="lbl">Язык интерфейса</div></div><div class="combo">Русский</div></div>
+          <div class="card"><div class="grow"><div class="lbl">Звуковые сигналы</div>
+            <div class="sub">Начало, конец, «текст в буфере», отказ, предупреждение, ошибка</div></div><div class="tgl on"></div></div>
+          <div class="card"><div class="grow"><div class="lbl">Плашка во время записи</div>
+            <div class="sub">Отключение станет доступно после первого использования Ctrl+Alt+Z</div></div><div class="tgl on locked"></div></div>
+        </div>
+      </div>
+
+      <div class="pane" id="p-keys" hidden>
+        <h3>Привязки</h3>
+        <div class="cards">
+          <div class="card"><div class="grow"><div class="lbl">Диктовка — удержание</div></div><span class="kbd">Mouse 4</span><button class="btn">Изменить</button></div>
+          <div class="card"><div class="grow"><div class="lbl">Диктовка — запасная</div></div><span class="kbd">Ctrl + Alt + D</span><button class="btn">Изменить</button></div>
+          <div class="card"><div class="grow"><div class="lbl">Диктовка — тумблер</div></div><span class="kbd">Ctrl + Alt + T</span><button class="btn">Изменить</button></div>
+          <div class="card"><div class="grow"><div class="lbl">Вставить последнее</div></div><span class="kbd">Ctrl + Alt + Z</span><button class="btn">Изменить</button></div>
+          <div class="card"><div class="grow"><div class="lbl">Скопировать последнее</div></div><span class="kbd">Ctrl + Alt + X</span><button class="btn">Изменить</button></div>
+          <div class="card"><div class="grow"><div class="lbl">Главное окно</div></div><span class="kbd">Ctrl + Alt + B</span><button class="btn">Изменить</button></div>
+        </div>
+        <div class="gaphdr">Отмена — двойной Esc во время записи. Одиночный Esc всегда проходит в приложение.</div>
+      </div>
+
+      <div class="pane" id="p-mic" hidden>
+        <h3>Микрофон</h3>
+        <div class="cards">
+          <div class="card"><div class="grow"><div class="lbl">Razer BlackShark V2</div>
+            <div class="sub">Используется сейчас · 16 кГц моно</div></div><span class="badge b-ok">Подключён</span><button class="btn">Проверить</button></div>
+          <div class="card"><div class="grow"><div class="lbl">Микрофонная решётка (Realtek)</div>
+            <div class="sub">Резерв — включится сам, если основной пропадёт</div></div><span class="badge b-neu">Резерв № 1</span></div>
+        </div>
+        <div class="gaphdr">Порядок можно менять перетаскиванием. Смена устройства во время записи не рвёт диктовку —
+        текущая запись доводится на прежнем микрофоне.</div>
+        <div class="infobar warn"><span class="sic">⚠</span><span>Bluetooth-гарнитура при записи переключается в телефонный
+        профиль: качество звука заметно падает. Для диктовки лучше USB или встроенный микрофон.</span></div>
+      </div>
+
+      <div class="pane" id="p-stt" hidden>
+        <h3>Расшифровка</h3>
+        <div class="cards">
+          <div class="card"><div class="grow"><div class="lbl">Способ</div>
+            <div class="sub">Облако Groq, ключ пользователя</div></div><div class="combo">Ключ Groq</div></div>
+          <div class="card"><div class="grow"><div class="lbl">Ключ API</div>
+            <div class="sub">Хранится в диспетчере учётных данных Windows, в файлы не записывается</div></div>
+            <span class="badge b-ok">Сохранён · проверен</span><button class="btn">Заменить…</button></div>
+          <div class="card"><div class="grow"><div class="lbl">Язык диктовки</div>
+            <div class="sub">Определяется явно, не автоматически</div></div><div class="combo">Русский</div></div>
+          <div class="card"><div class="grow"><div class="lbl">Причёсывание текста</div>
+            <div class="sub">Отдельный ключ, по умолчанию выключено; хранятся оба варианта текста</div></div><div class="tgl"></div></div>
+        </div>
+        <div style="height:10px"></div>
+        <div class="infobar warn"><span class="sic">⚠</span><span><b>Расшифровка идёт в облаке.</b> Без интернета текст
+        не появится: записи сохранятся и расшифруются, когда связь вернётся.</span></div>
+      </div>
+
+      <div class="pane" id="p-dic" hidden>
+        <h3>Словарь</h3>
+        <table class="dic">
+          <tr><th>Тип</th><th>Слышится</th><th></th><th>Пишется</th><th></th></tr>
+          <tr><td><span class="badge b-neu">написание</span></td><td>впс · ВПС · vps</td><td class="arr">→</td><td><b>VPS</b></td><td><button class="btn subtle">Изменить</button></td></tr>
+          <tr><td><span class="badge b-neu">написание</span></td><td>впн · vpn</td><td class="arr">→</td><td><b>VPN</b></td><td><button class="btn subtle">Изменить</button></td></tr>
+          <tr><td><span class="badge b-warn">замена</span></td><td>прот</td><td class="arr">→</td><td><b>прод</b></td><td><button class="btn subtle">Изменить</button></td></tr>
+        </table>
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button class="btn primary">Добавить правило</button><button class="btn">Импорт JSON</button><button class="btn">Экспорт JSON</button>
+        </div>
+      </div>
+
+      <div class="pane" id="p-abt" hidden>
+        <h3>О программе</h3>
+        <div class="cards">
+          <div class="card"><div class="grow"><div class="lbl">BillyTalk 0.2.0</div>
+            <div class="sub">github.com/Israphael/billytalk</div></div><button class="btn">Проверить обновления</button></div>
+          <div class="card"><div class="grow"><div class="lbl">Журнал работы</div>
+            <div class="sub">Текст диктовок и нажатия клавиш в журнал не попадают никогда</div></div><button class="btn">Открыть папку логов</button></div>
+          <div class="card"><div class="grow"><div class="lbl">Данные</div>
+            <div class="sub">История и аудио на этом компьютере</div></div><button class="btn danger">Очистить историю…</button></div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+</section>
+
+<!-- ================= ИСТОРИЯ ================= -->
+<section class="block">
+  <h2>История</h2>
+  <p class="why">Поиск по всему тексту, вставка одним действием (её исполняет ядро), экспорт. Статус каждой записи
+  виден сразу; выделенная строка показывает действия.</p>
+  <div class="mockwrap"><div class="win">
+    <div class="tbar"><div class="ticon">B</div><div class="ttl">BillyTalk — история</div>
+      <div class="caps"><div class="cap"><div class="gmin"></div></div><div class="cap"><div class="gmax"></div></div><div class="cap close"><div class="gx">✕</div></div></div>
+    </div>
+    <div class="hist-tools">
+      <input class="input" placeholder="Поиск по истории…" aria-label="Поиск">
+      <div class="combo">Все статусы</div>
+      <div style="flex:1"></div>
+      <button class="btn">Экспорт…</button>
+    </div>
+    <div class="hlist">
+      <div class="hrow"><span class="tm">14:32</span><span class="tx">Собери, пожалуйста, сводку по серверам за неделю и пришли её в общий чат до вечера</span><span class="app">Telegram</span><span class="badge b-ok">Вставлено</span></div>
+      <div class="hrow sel"><span class="tm">14:28</span><span class="tx">Проверь бэкапы на втором VPS и обнови сертификаты, срок у них кончается в августе</span><span class="app">Chrome</span><span class="badge b-warn">В буфере · Ctrl+Alt+Z</span>
+        <span class="acts"><button class="btn primary">Вставить</button><button class="btn">Копировать</button></span></div>
+      <div class="hrow"><span class="tm">14:11</span><span class="tx">Добавь в план на понедельник созвон с дизайнером по обложкам</span><span class="app">Notepad</span><span class="badge b-ok">Вставлено</span></div>
+      <div class="hrow"><span class="tm">13:57</span><span class="tx">Напиши клиенту, что доступы придут завтра утром вместе с инструкцией</span><span class="app">Terminal</span><span class="badge b-neu">Без вставки</span></div>
+      <div class="hrow"><span class="tm">13:40</span><span class="tx">Черновик описания для нового рилса про микрофон и звук…</span><span class="app">Chrome</span><span class="badge b-err">Ждёт связи</span></div>
+    </div>
+    <div class="hfoot"><span>312 записей · текст хранится бессрочно</span><span>аудио — 1 час после доставки</span></div>
+  </div></div>
+</section>
+
+<!-- ================= МАСТЕР ================= -->
+<section class="block">
+  <h2>Мастер первого запуска</h2>
+  <p class="why">Семь шагов, кнопки «Назад / Далее» рабочие — можно пройти весь сценарий. Шаг «Отвязка кнопки „Назад“»
+  пропускаемый, с честным объяснением зачем он нужен.</p>
+  <div class="mockwrap"><div class="win wiz">
+    <div class="tbar"><div class="ticon">B</div><div class="ttl">BillyTalk — первый запуск</div>
+      <div class="caps"><div class="cap"><div class="gmin"></div></div><div class="cap close"><div class="gx">✕</div></div></div>
+    </div>
+    <div class="wiz-body">
+      <div class="rail" id="wrail"></div>
+      <div class="wpane">
+        <div id="wstage-holder" style="display:contents"></div>
+        <div class="wnav">
+          <button class="btn" id="wskip" hidden>Пропустить</button>
+          <div class="spacer"></div>
+          <button class="btn" id="wback">Назад</button>
+          <button class="btn primary" id="wnext">Далее</button>
+        </div>
+      </div>
+    </div>
+  </div></div>
+</section>
+
+<!-- ================= ПЛАШКА И ТРЕЙ ================= -->
+<section class="block">
+  <h2>Плашка и трей</h2>
+  <p class="why">Плашка — наше собственное окно поверх всех, фокус не забирает; она нарисована нами и потому
+  <b>одинакова на Windows 10 и 11</b>. Меню трея и значок — системные, они переключаются вместе с ОС.</p>
+  <div class="mockwrap"><div class="deskrow">
+    <div class="pillcol">
+      <div class="pill"><span class="dot"></span><span>Запись</span>
+        <span class="bars"><i style="height:5px"></i><i style="height:11px"></i><i style="height:8px"></i><i style="height:13px"></i><i style="height:6px"></i></span>
+        <span class="tmr">0:07</span></div>
+      <div class="caplbl">во время записи — индикатор уровня и время</div>
+      <div class="pill tr"><span class="dots">•••</span><span>Расшифровка…</span></div>
+      <div class="caplbl">между отпусканием и текстом (~0,5 с)</div>
+      <div class="traystates">
+        <div class="tstate"><div class="ic"><div class="micg"></div></div><div class="caplbl">покой</div></div>
+        <div class="tstate"><div class="ic"><div class="micg"></div><span class="ovr" style="background:#e81123"></span></div><div class="caplbl">запись</div></div>
+        <div class="tstate"><div class="ic"><div class="micg"></div><span class="ovr" style="background:#0078d7">…</span></div><div class="caplbl">расшифровка</div></div>
+        <div class="tstate"><div class="ic"><div class="micg"></div><span class="ovr" style="background:#9d5d00">2</span></div><div class="caplbl">очередь</div></div>
+        <div class="tstate"><div class="ic"><div class="micg"></div><span class="ovr" style="background:#5d5d5d">⏸</span></div><div class="caplbl">остановлен</div></div>
+        <div class="tstate"><div class="ic"><div class="micg"></div><span class="ovr" style="background:#c42b1c">!</span></div><div class="caplbl">ошибка</div></div>
+        <div class="tstate"><div class="ic" style="opacity:.6"><div class="micg"></div><span class="ovr" style="background:#5d5d5d">⤫</span></div><div class="caplbl">офлайн</div></div>
+      </div>
+    </div>
+    <div>
+      <div class="traymenu">
+        <div class="tmi"><span class="chk">✓</span><span>Диктовка включена</span></div>
+        <div class="tmsep"></div>
+        <div class="tmi"><span class="chk"></span><span>Открыть настройки</span></div>
+        <div class="tmi"><span class="chk"></span><span>История</span></div>
+        <div class="tmi"><span class="chk"></span><span>Язык диктовки: русский</span><span class="hot">▸</span></div>
+        <div class="tmsep"></div>
+        <div class="tmi"><span class="chk"></span><span>Вставить последнее</span><span class="hot">Ctrl+Alt+Z</span></div>
+        <div class="tmi"><span class="chk"></span><span>Скопировать последнее</span><span class="hot">Ctrl+Alt+X</span></div>
+        <div class="tmsep"></div>
+        <div class="tmi"><span class="chk"></span><span>Выход</span></div>
+      </div>
+      <div class="caplbl" style="text-align:center;margin-top:10px">меню трея</div>
+    </div>
+  </div></div>
+  <p class="note"><b>Вопрос в OPEN-QUESTIONS при сборке трея:</b> спека §11 называет шесть состояний значка без «офлайн»,
+  но §3 требует отдельное состояние «офлайн» — здесь нарисовано семь. Решим при реализации, оба прочтения запишем.</p>
+</section>
+
+</div><!-- /mockroot -->
+
+<footer class="pagefoot">
+  <b>Насколько макет честен относительно wxPython:</b>
+  <ul>
+    <li><b>Придёт от ОС само:</b> вид кнопок, полей, списков и меню; скруглённые углы окон на Win11 и прямые на Win10; системный шрифт (Segoe UI Variable ⇄ Segoe UI).</li>
+    <li><b>Сделаем через стили окна (ctypes):</b> тёмный заголовок на обеих системах; фон Mica — только на Win11, на Win10 вместо него ровный системный фон, как здесь в режиме «Windows 10».</li>
+    <li><b>Нарисуем сами, одинаково на обеих ОС:</b> плашка, значок трея, карточки-строки настроек (фон-подложка; контролы внутри остаются системными — доступность для экранных дикторов сохраняется).</li>
+    <li><b>Упрощение макета:</b> тумблеры показаны в стиле WinUI; в приложении это будут системные флажки либо отрисованный тумблер с полноценной озвучкой — решим при сборке окон.</li>
+  </ul>
+</footer>
+</div>
+
+<script>
+(function(){
+  var root=document.getElementById('mockroot');
+  var chips=document.getElementById('chips');
+  var b11=document.getElementById('os11'), b10=document.getElementById('os10');
+  var bl=document.getElementById('thl'), bd=document.getElementById('thd');
+
+  function chipset(){
+    var w11=root.classList.contains('os11');
+    chips.innerHTML='';
+    [['Шрифт', w11?'Segoe UI Variable':'Segoe UI'],
+     ['Углы окна', w11?'8 px':'0'],
+     ['Фон', w11?'Mica':'плоский'],
+     ['Меню', w11?'скруглённое':'классическое']].forEach(function(p){
+      var s=document.createElement('span'); s.className='chip';
+      s.innerHTML=p[0]+': <b>'+p[1]+'</b>'; chips.appendChild(s);
+    });
+  }
+  function setOS(v){ root.classList.toggle('os11',v); root.classList.toggle('os10',!v);
+    b11.classList.toggle('on',v); b10.classList.toggle('on',!v); chipset(); }
+  function setTh(d){ root.classList.toggle('t-dark',d); root.classList.toggle('t-light',!d);
+    bd.classList.toggle('on',d); bl.classList.toggle('on',!d); }
+  b11.onclick=function(){setOS(true)}; b10.onclick=function(){setOS(false)};
+  bl.onclick=function(){setTh(false)}; bd.onclick=function(){setTh(true)};
+
+  var attr=document.documentElement.getAttribute('data-theme');
+  var dark = attr ? attr==='dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  setTh(dark); chipset();
+
+  /* settings nav */
+  var nav=document.getElementById('setnav');
+  nav.addEventListener('click',function(e){
+    var b=e.target.closest('button'); if(!b) return;
+    nav.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});
+    document.querySelectorAll('.pane').forEach(function(p){p.hidden=(p.id!==b.dataset.pane)});
+  });
+
+  /* wizard */
+  var STEPS=[
+    {t:'Микрофон', h:'Проверим микрофон', b:'<p>Скажите что-нибудь — полоски должны двигаться.</p>'+
+      '<div class="meter"><i style="height:6px"></i><i style="height:14px"></i><i style="height:22px"></i><i style="height:12px"></i><i style="height:26px"></i><i style="height:9px"></i><i style="height:18px"></i></div>'+
+      '<p><b>Razer BlackShark V2</b> — уровень хороший.</p>'+
+      '<p>Если полоски не двигаются, разрешите доступ к микрофону: <a>Открыть параметры конфиденциальности</a></p>'},
+    {t:'Язык', h:'На каком языке будете диктовать?', b:'<p>Язык задаётся явно — так расшифровка точнее. Сменить можно в любой момент из меню трея.</p>'+
+      '<div class="cards"><div class="card"><div class="grow"><div class="lbl">Язык диктовки</div></div><div class="combo">Русский</div></div></div>'},
+    {t:'Кнопка', h:'Какой кнопкой диктовать?', b:'<p>Нажмите сочетание или кнопку мыши — оно назначится само. По умолчанию — боковая кнопка мыши «вперёд».</p>'+
+      '<div class="hkbig"><span class="kbd">Mouse 4</span></div>'+
+      '<p>Удерживайте — идёт запись; отпустите — текст появится в активном поле.</p>'},
+    {t:'Кнопка «Назад»', h:'Снимите «Назад» с боковой кнопки', b:'<p>Пока BillyTalk работает, он сам не пускает «Назад» в браузер. Но при сбое или закрытой программе кнопка снова станет «Назад» — и может увести со страницы с заполненной формой.</p>'+
+      '<p><b>Надёжнее отвязать её в программе мыши</b> (Razer Synapse → Кнопка 4 → «Отключить»). Это необязательно — шаг можно пропустить.</p>', skip:true},
+    {t:'Интернет', h:'Расшифровка работает через облако', b:'<div class="infobar warn"><span class="sic">⚠</span><span><b>Без интернета диктовка не будет работать.</b> Записи сохранятся и расшифруются, когда связь появится, но текст в этот момент вы не получите.</span></div>'+
+      '<p style="margin-top:12px">Всё сказанное хранится у вас: аудио — до расшифровки и час после доставки, текст — бессрочно в истории.</p>'},
+    {t:'Ключ Groq', h:'Подключите ключ Groq', b:'<p>Бесплатно, карта не нужна: <a>console.groq.com/keys</a></p>'+
+      '<input class="input" style="max-width:340px" placeholder="gsk_…" aria-label="Ключ API">'+
+      '<p style="margin-top:10px">Ключ сохранится в диспетчере учётных данных Windows — в файлы и настройки он не попадает.</p>'+
+      '<button class="btn" style="margin-top:2px">Проверить ключ</button>'},
+    {t:'Проверка', h:'Попробуйте!', b:'<p>Зажмите <span class="kbd">Mouse 4</span>, скажите пару слов и отпустите.</p>'+
+      '<div class="hkbig" style="border-style:solid"><span style="color:var(--mut)">Здесь появится ваш текст…</span></div>'+
+      '<p>Готово — BillyTalk будет ждать в трее. Значок можно закрепить, чтобы видеть состояние.</p>'}
+  ];
+  var cur=0, rail=document.getElementById('wrail'), holder=document.getElementById('wstage-holder');
+  function draw(){
+    rail.innerHTML=''; STEPS.forEach(function(s,i){
+      var d=document.createElement('div'); d.className='rstep'+(i===cur?' on':(i<cur?' done':''));
+      d.innerHTML='<span class="dot"></span>'+s.t; rail.appendChild(d);
+    });
+    var s=STEPS[cur];
+    holder.innerHTML='<div class="stepno">Шаг '+(cur+1)+' из '+STEPS.length+'</div><h3>'+s.h+'</h3><div class="wstage">'+s.b+'</div>';
+    document.getElementById('wback').style.visibility=cur?'visible':'hidden';
+    document.getElementById('wskip').hidden=!s.skip;
+    document.getElementById('wnext').textContent=(cur===STEPS.length-1)?'Готово':'Далее';
+  }
+  document.getElementById('wnext').onclick=function(){ cur=(cur+1)%STEPS.length; draw(); };
+  document.getElementById('wback').onclick=function(){ if(cur>0){cur--; draw();} };
+  document.getElementById('wskip').onclick=function(){ cur=Math.min(cur+1,STEPS.length-1); draw(); };
+  draw();
+
+  /* history row selection */
+  document.querySelectorAll('.hrow').forEach(function(r){
+    r.addEventListener('click',function(){
+      document.querySelectorAll('.hrow').forEach(function(x){x.classList.remove('sel');
+        var a=x.querySelector('.acts'); if(a&&x!==r) a.remove();});
+      r.classList.add('sel');
+      if(!r.querySelector('.acts')){
+        var sp=document.createElement('span'); sp.className='acts';
+        sp.innerHTML='<button class="btn primary">Вставить</button><button class="btn">Копировать</button>';
+        r.appendChild(sp);
+      }
+    });
+  });
+})();
+</script>
