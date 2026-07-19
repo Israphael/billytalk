@@ -3,15 +3,16 @@
 **Push-to-talk dictation for Windows.** Hold a key — or a mouse side button — speak,
 and the text lands in whatever field your cursor was in.
 
-> **Status: design complete, first module built.** There is nothing to install yet — no
-> installer, no UI, no working dictation. What exists is the state machine the product's
-> correctness argument rests on, with 57 tests, plus the engineering that came before it:
-> competitor analysis, platform research, hardware verification, and measured spikes —
-> including four assumptions that measurement overturned.
+> **Status: cycle 1 complete — the core dictates.** Hold Mouse 4 in any window, speak,
+> release: the text appears. Verified live on real hardware (nine dictations end to end,
+> including a ten-second clip; the log finished the session at zero lines, by design).
+> 213 tests, zero skipped. Still no installer and no UI — that is cycle 2 (tray, overlay,
+> settings) and cycle 3 (packaging); today it runs as `python -m billytalk.core`.
 >
-> Building that module found **four defects in the specification that described it**, one
-> of them the exact class of bug this project exists to prevent. That is recorded below,
-> because it is the most useful thing here.
+> Building it found **five defects in the specification that described it**, and an
+> adversarial multi-lens review confirmed eleven more in the code — every one recorded
+> with both readings in `docs/ru/spec/OPEN-QUESTIONS.md`, because that ledger is the
+> most useful thing here.
 
 > **How this was built.** I wrote the research, ADRs and specification here with Claude
 > Code as a working partner; the commit trailers record it. Every empirical claim was

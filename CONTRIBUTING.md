@@ -1,7 +1,8 @@
 # Contributing
 
-**This project is pre-code.** There is no application yet — only design documentation,
-decision records, and measurement scripts. That shapes what is useful right now.
+**The core works; the UI does not exist yet.** Cycle 1 shipped a working dictation core
+(`python -m billytalk.core`, 213 tests); cycles 2–3 add the tray, windows and installer.
+What is most useful from outside has not changed, though:
 
 ## The most useful thing you can do today
 

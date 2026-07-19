@@ -173,7 +173,9 @@ spikes/  probes/  docs/
 
 ```sql
 PRAGMA journal_mode=WAL;
-PRAGMA user_version=1;
+-- ⚠️ Штамп user_version стоит В КОНЦЕ скрипта, не здесь: прерванный посередине
+-- executescript не должен оставить версию 1 при полусозданной схеме — иначе
+-- следующий старт пропустит DDL навсегда (OPEN-QUESTIONS, ревью цикла 1).
 
 CREATE TABLE history (
   id                INTEGER PRIMARY KEY,
@@ -237,6 +239,8 @@ CREATE TABLE dictionary (
   repl  TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1
 );
+
+PRAGMA user_version=1;  -- последним, см. предупреждение в начале скрипта
 ```
 
 **FTS5, не `LIKE`** — история бессрочна, поиск обязан оставаться быстрым.
@@ -250,12 +254,20 @@ CREATE TABLE dictionary (
 **Миграции:** `PRAGMA user_version`, последовательные функции `migrate_1_to_2` и т. д.
 Схема заводится сразу целиком, чтобы MVP-0 не требовал миграции при добавлении режима 2.
 
-**Уборка** (спека §3, срок из конфигурации, не литерал):
+**Уборка** (спека §3, срок из конфигурации, не литерал). ⚠️ Уборка освобождает
+**аудио**, строку не трогает никогда — текст бессрочен (спека §10). Ранняя
+редакция писала здесь `DELETE FROM history`, что уничтожало бы бессрочную
+историю (OPEN-QUESTIONS §15):
 
 ```sql
-DELETE ... WHERE audio_release_at IS NOT NULL
-             AND audio_release_at < :now - :retention_minutes * 60000
+UPDATE history SET audio_path = NULL
+ WHERE audio_path IS NOT NULL
+   AND audio_release_at IS NOT NULL
+   AND audio_release_at < :now - :retention_minutes * 60000
 ```
+
+Файлы удаляются **после** коммита обнуления: упавший между ними процесс оставляет
+файл-сироту для стартовой сборки мусора, обратный порядок — путь в никуда.
 
 `audio_release_at` ставится при **любом терминальном исходе, где текст дошёл до
 пользователя** — `inserted`, `left_on_clipboard`, `focus_lost`, `verify_impossible`.
