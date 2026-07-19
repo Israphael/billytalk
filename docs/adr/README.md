@@ -10,6 +10,7 @@ describe how to falsify is a preference, not a decision.
 | [0002](0002-build-fresh-not-fork.md) | Build fresh, borrow patterns, do not fork | Accepted |
 | [0003](0003-hosted-tier-on-groq.md) | Hosted tier proxies Groq; no GPU rental | Accepted |
 | [0004](0004-keep-hooks-in-python.md) | Hooks stay in Python — supersedes a native helper | Accepted |
+| [0005](0005-v3-scope.md) | v3.0 is a free NVDA add-on for error detection, not a product | Accepted |
 
 ## Two of these were reversed by measurement
 
