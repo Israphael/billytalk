@@ -37,6 +37,12 @@ include = ["billytalk*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+filterwarnings = [
+    # sounddevice 0.5.5 sets .shape on the callback array; deprecated by NumPy
+    # 2.5, harmless here, and theirs to fix — scoped so our own deprecations
+    # still surface.
+    "ignore:Setting the shape on a NumPy array:DeprecationWarning:sounddevice",
+]
 
 [tool.ruff]
 target-version = "py314"
