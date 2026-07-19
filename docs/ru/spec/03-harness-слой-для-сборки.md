@@ -106,8 +106,25 @@ spikes/  probes/  docs/
 
 ## 3. Протокол IPC
 
-**Транспорт:** именованный канал `\\.\pipe\billytalk-{sid}`, где `{sid}` — SID
-пользователя. Кадрирование: 4 байта длины little-endian, затем UTF-8 JSON.
+**Транспорт:** именованный канал `\\.\pipe\billytalk-{sid}-{session_id}`.
+Кадрирование: 4 байта длины little-endian, затем UTF-8 JSON.
+
+⚠️ **Только SID недостаточно.** Пространство имён каналов **общемашинное, не
+посессионное**: один пользователь в двух сессиях (консоль + RDP) получил бы одно имя,
+и интерфейс из второй сессии подключился бы к ядру первой — которое попыталось бы
+вставить текст в окно чужой сессии. `session_id` берётся из `ProcessIdToSessionId`.
+
+⚠️ **`lpSecurityAttributes` обязателен и не может быть `NULL`.** По умолчанию Windows
+даёт доступ на чтение группе «Все» и анонимной учётной записи — а по каналу идут
+расшифровки. DACL: только текущий пользователь и `LocalSystem`.
+
+⚠️ **`FILE_FLAG_FIRST_PIPE_INSTANCE`** на первом экземпляре: занятое имя означает уже
+работающее ядро или попытку подмены. Без флага чужой процесс, создавший канал первым,
+становится «ядром», и интерфейс подключится к нему.
+
+Плюс `PIPE_REJECT_REMOTE_CLIENTS`. Интерфейс после подключения сверяет
+`GetNamedPipeServerProcessId` с путём образа: рукопожатие `hello` подлинности
+не устанавливает.
 
 **Рукопожатие обязательно первым сообщением:**
 
@@ -183,14 +200,21 @@ CREATE INDEX idx_history_audio   ON history(audio_delivered_at)
 CREATE VIRTUAL TABLE history_fts USING fts5(
   text_final, content='history', content_rowid='id', tokenize='unicode61'
 );
+-- ⚠️ ВНЕШНЕЕ СОДЕРЖИМОЕ: обычные UPDATE/DELETE по history_fts НЕ РАБОТАЮТ.
+-- Проверено на живом SQLite 3.50.4: они молча не срабатывают, ошибки нет,
+-- integrity-check проходит, а поиск возвращает удалённые строки и старый текст.
+-- Обязательна специальная форма 'delete' со СТАРЫМИ значениями.
 CREATE TRIGGER history_ai AFTER INSERT ON history BEGIN
   INSERT INTO history_fts(rowid, text_final) VALUES (new.id, new.text_final);
 END;
-CREATE TRIGGER history_au AFTER UPDATE OF text_final ON history BEGIN
-  UPDATE history_fts SET text_final = new.text_final WHERE rowid = new.id;
-END;
 CREATE TRIGGER history_ad AFTER DELETE ON history BEGIN
-  DELETE FROM history_fts WHERE rowid = old.id;
+  INSERT INTO history_fts(history_fts, rowid, text_final)
+    VALUES('delete', old.id, old.text_final);
+END;
+CREATE TRIGGER history_au AFTER UPDATE OF text_final ON history BEGIN
+  INSERT INTO history_fts(history_fts, rowid, text_final)
+    VALUES('delete', old.id, old.text_final);
+  INSERT INTO history_fts(rowid, text_final) VALUES (new.id, new.text_final);
 END;
 
 CREATE TABLE dictionary (
