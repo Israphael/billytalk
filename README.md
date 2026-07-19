@@ -3,10 +3,15 @@
 **Push-to-talk dictation for Windows.** Hold a key — or a mouse side button — speak,
 and the text lands in whatever field your cursor was in.
 
-> **Status: design complete, no code yet.** There is nothing here to install and nothing
-> to run except the diagnostic scripts. What this repository contains is the engineering
-> that comes *before* code: competitor analysis, platform research, hardware verification,
-> and measured spikes — including three assumptions that measurement overturned.
+> **Status: design complete, first module built.** There is nothing to install yet — no
+> installer, no UI, no working dictation. What exists is the state machine the product's
+> correctness argument rests on, with 57 tests, plus the engineering that came before it:
+> competitor analysis, platform research, hardware verification, and measured spikes —
+> including four assumptions that measurement overturned.
+>
+> Building that module found **four defects in the specification that described it**, one
+> of them the exact class of bug this project exists to prevent. That is recorded below,
+> because it is the most useful thing here.
 
 > **How this was built.** I wrote the research, ADRs and specification here with Claude
 > Code as a working partner; the commit trailers record it. Every empirical claim was
@@ -61,11 +66,12 @@ Three transcription modes are planned behind one interface:
 
 ---
 
-## What's interesting here (even without code)
+## What's interesting here
 
-This repository documents the design phase in full, including the parts that went wrong.
+This repository documents the design phase in full, including the parts that went wrong —
+and the parts that were only found by writing the code.
 
-### Two decisions that measurement reversed
+### Decisions that measurement reversed
 
 **A native input helper was designed, then cancelled.** A platform review argued that a
 pure-Python `ctypes` low-level mouse hook was unviable — a high-polling-rate mouse would
@@ -131,8 +137,28 @@ start. The button release arrives while the state machine is still initialising 
 treated as an abort. A bare mouse button is the worst case, because a click has no
 modifier-hold latency to mask the initialisation window.
 
-BillyTalk queues the release instead. The invariant
-`count(StartCapture) == count(StopCapture)` is a property test, checkable with no hardware.
+BillyTalk queues the release instead, and the balance between captures opened and
+captures closed is a property test — checkable over random event sequences with no
+hardware at all.
+
+### The specification was wrong, and only the code found out
+
+Building that state machine surfaced four defects in the document that specified it.
+The worst is the same class of bug as the competitor's, one layer deeper: hold the button
+while an earlier dictation is still delivering, and the press queues. Let go, and the
+spec said to ignore the release — so by the time that press is popped the button is
+already up, no second release will ever arrive, and the recording runs to the five-minute
+fuse with the button dead in your hand.
+
+**Nothing catches it.** The capture ledger stays perfectly balanced. It is invisible to
+every invariant and shows up only as a user holding a button that does nothing.
+
+And the headline invariant itself was wrong. Written literally,
+`count(StartCapture) == count(StopCapture)` is *unsatisfiable by a correct machine*,
+because cancelling a dictation closes its capture with a different effect. The real
+property is a balance — every capture opened is closed exactly once, by exactly one
+closer — and the literal equality now belongs to a narrower test over sequences that
+contain no cancellations.
 
 **Wrong-window insertion is a skipped focus restore.** The competitor captures the focused
 element reliably at dictation start, then declines to return to it before pasting.
