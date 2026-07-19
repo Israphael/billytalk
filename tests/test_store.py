@@ -1,0 +1,387 @@
+"""``store/``: the audio clock, cleanup policy, config file and secrets (harness §8).
+
+The two mandatory storage names that could not exist while ``store/`` was
+schema-only — ``cleanup_skips_rows_with_null_release_at`` (moved here from
+``test_store_ddl.py``, now against real code) and ``cleanup_paused_while_offline``
+(formerly skipped) — both live here.
+
+Times are integers passed by hand; nothing here sleeps or reads a clock.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import uuid
+from pathlib import Path
+
+import pytest
+
+from billytalk.core.machine.effects import DeliveryStatus
+from billytalk.core.store.config import (
+    CONFIG_SCHEMA_VERSION,
+    Config,
+    ConfigTooNew,
+    load_config,
+    save_config,
+)
+from billytalk.core.store.db import connect, ensure_schema
+from billytalk.core.store.history import CleanupGate, HistoryStore
+
+HOUR_MS = 3_600_000
+
+
+@pytest.fixture
+def store() -> HistoryStore:
+    conn = connect(":memory:")
+    ensure_schema(conn)
+    return HistoryStore(conn)
+
+
+def _clip(tmp_path: Path, name: str, size: int = 64) -> Path:
+    file = tmp_path / name
+    file.write_bytes(b"\x00" * size)
+    return file
+
+
+def _row(store: HistoryStore, row_id: int) -> sqlite3.Row:
+    row = store._conn.execute("SELECT * FROM history WHERE id = ?", (row_id,)).fetchone()
+    assert row is not None
+    return row
+
+
+# --------------------------------------------------------------------------- #
+# the audio release clock
+# --------------------------------------------------------------------------- #
+
+
+def test_delivered_status_starts_the_release_clock(store: HistoryStore, tmp_path: Path) -> None:
+    clip = _clip(tmp_path, "a.flac")
+    rid = store.add(
+        seq=1, created_at=1000, now=1500, duration_ms=800,
+        status=DeliveryStatus.PENDING_TRANSCRIBE, audio_path=str(clip),
+    )
+    assert _row(store, rid)["audio_release_at"] is None, "undelivered audio is held"
+
+    store.set_status(rid, DeliveryStatus.INSERTED, now=9000)
+    assert _row(store, rid)["audio_release_at"] == 9000
+
+
+def test_release_clock_is_not_restarted_by_a_later_status(
+    store: HistoryStore, tmp_path: Path
+) -> None:
+    """A history re-insert must not grant the audio a fresh hour every time."""
+    clip = _clip(tmp_path, "a.flac")
+    rid = store.add(
+        seq=1, created_at=1000, now=1500, duration_ms=800,
+        status=DeliveryStatus.PENDING_TRANSCRIBE, audio_path=str(clip),
+    )
+    store.set_status(rid, DeliveryStatus.INSERTED, now=9000)
+    store.set_status(rid, DeliveryStatus.INSERTED, now=500_000)
+    assert _row(store, rid)["audio_release_at"] == 9000
+
+
+def test_terminal_at_birth_statuses_start_the_clock_immediately(
+    store: HistoryStore, tmp_path: Path
+) -> None:
+    """``too_short``/``empty``/``cancelled`` will never be transcribed; holding
+    their audio forever would be a slow disk leak (OPEN-QUESTIONS §15)."""
+    for i, status in enumerate(
+        (DeliveryStatus.TOO_SHORT, DeliveryStatus.EMPTY, DeliveryStatus.CANCELLED), start=1
+    ):
+        clip = _clip(tmp_path, f"{status.value}.flac")
+        rid = store.add(
+            seq=i, created_at=i * 1000, now=i * 1000 + 40, duration_ms=100,
+            status=status, audio_path=str(clip),
+        )
+        assert _row(store, rid)["audio_release_at"] == i * 1000 + 40
+
+
+def test_hold_statuses_keep_audio_unconditionally(store: HistoryStore, tmp_path: Path) -> None:
+    """``transcribe_failed`` holds too: an invalid key is fixable, and until it is
+    the audio may be the only copy of the words (spec §3)."""
+    clip = _clip(tmp_path, "a.flac")
+    rid = store.add(
+        seq=1, created_at=1000, now=1500, duration_ms=800,
+        status=DeliveryStatus.PENDING_TRANSCRIBE, audio_path=str(clip),
+    )
+    store.set_status(rid, DeliveryStatus.PENDING_RETRY, now=9000)
+    assert _row(store, rid)["audio_release_at"] is None
+    store.set_status(rid, DeliveryStatus.TRANSCRIBE_FAILED, now=10_000, error_code="key_invalid")
+    assert _row(store, rid)["audio_release_at"] is None
+    assert _row(store, rid)["error_code"] == "key_invalid"
+
+
+# --------------------------------------------------------------------------- #
+# cleanup
+# --------------------------------------------------------------------------- #
+
+
+def test_cleanup_skips_rows_with_null_release_at(store: HistoryStore, tmp_path: Path) -> None:
+    """``NULL`` means hold (spec §3): the dictation has not been transcribed yet,
+    so the audio file is the only copy of what the user said."""
+    old = _clip(tmp_path, "old.flac")
+    waiting = _clip(tmp_path, "waiting.flac")
+    now = 10 * HOUR_MS
+    delivered = store.add(
+        seq=1, created_at=1000, now=1500, duration_ms=800,
+        status=DeliveryStatus.PENDING_TRANSCRIBE, audio_path=str(old),
+    )
+    store.set_status(delivered, DeliveryStatus.INSERTED, now=now - 3 * HOUR_MS)
+    held = store.add(
+        seq=2, created_at=2000, now=2500, duration_ms=800,
+        status=DeliveryStatus.PENDING_TRANSCRIBE, audio_path=str(waiting),
+    )
+
+    released = store.cleanup(now=now, retention_minutes=60)
+
+    assert released == [str(old)]
+    assert not old.exists()
+    assert waiting.exists(), "held audio must survive any number of cleanups"
+    assert _row(store, held)["audio_path"] == str(waiting)
+
+
+def test_cleanup_releases_audio_but_never_deletes_the_row(
+    store: HistoryStore, tmp_path: Path
+) -> None:
+    """Spec §10: text is forever. Early harness §4 wrote cleanup as ``DELETE FROM
+    history``, which would have destroyed the permanent history
+    (OPEN-QUESTIONS §15)."""
+    clip = _clip(tmp_path, "a.flac")
+    now = 10 * HOUR_MS
+    rid = store.add(
+        seq=1, created_at=1000, now=1500, duration_ms=800,
+        status=DeliveryStatus.PENDING_TRANSCRIBE, audio_path=str(clip),
+    )
+    store.record_transcription(
+        rid, text_raw="выкати на прод", text_final="выкати на прод",
+        language="ru", provider_id="groq", billed_seconds=1.2, latency_ms=370,
+    )
+    store.set_status(rid, DeliveryStatus.INSERTED, now=now - 3 * HOUR_MS)
+
+    store.cleanup(now=now, retention_minutes=60)
+
+    row = _row(store, rid)
+    assert row["audio_path"] is None
+    assert row["text_final"] == "выкати на прод", "the text outlives its audio"
+    assert store.search("прод"), "and stays searchable"
+
+
+def test_cleanup_paused_while_offline(store: HistoryStore, tmp_path: Path) -> None:
+    """Spec §3, the customer's rule: while the network is down cleanup does not
+    run **at all** — even for delivered rows — and it resumes ten minutes after
+    the first successful transcription."""
+    clip = _clip(tmp_path, "delivered-long-ago.flac")
+    now = 10 * HOUR_MS
+    rid = store.add(
+        seq=1, created_at=1000, now=1500, duration_ms=800,
+        status=DeliveryStatus.PENDING_TRANSCRIBE, audio_path=str(clip),
+    )
+    store.set_status(rid, DeliveryStatus.INSERTED, now=now - 5 * HOUR_MS)
+
+    gate = CleanupGate()
+    assert gate.should_run(now), "a fresh process assumes the network works"
+
+    gate.network_lost()
+    for tick in range(0, 4 * HOUR_MS, HOUR_MS):
+        assert not gate.should_run(now + tick), "offline: cleanup must not run at all"
+    assert clip.exists(), "the driver contract: no should_run, no cleanup call"
+
+    back_online = now + 4 * HOUR_MS
+    gate.transcribe_succeeded(back_online)
+    assert not gate.should_run(back_online), "not immediately"
+    assert not gate.should_run(back_online + 9 * 60_000), "not at nine minutes"
+    assert gate.should_run(back_online + 10 * 60_000), "at ten, cleanup resumes"
+
+    # Steady-state successes must not keep pushing cleanup into the future.
+    gate.transcribe_succeeded(back_online + 11 * 60_000)
+    assert gate.should_run(back_online + 12 * 60_000)
+
+    released = store.cleanup(now=back_online + 10 * 60_000, retention_minutes=60)
+    assert released == [str(clip)]
+    assert not clip.exists()
+
+
+# --------------------------------------------------------------------------- #
+# the retention ceiling
+# --------------------------------------------------------------------------- #
+
+
+def test_evict_over_row_cap_releases_oldest_audio_first(
+    store: HistoryStore, tmp_path: Path
+) -> None:
+    clips = [_clip(tmp_path, f"{i}.flac") for i in range(1, 5)]
+    for i, clip in enumerate(clips, start=1):
+        store.add(
+            seq=i, created_at=i * 1000, now=i * 1000, duration_ms=800,
+            status=DeliveryStatus.PENDING_TRANSCRIBE, audio_path=str(clip),
+        )
+
+    released = store.evict_over_cap(max_rows=2, max_bytes=10 * 1024**2)
+
+    assert sorted(released) == sorted([str(clips[0]), str(clips[1])])
+    assert not clips[0].exists() and not clips[1].exists()
+    assert clips[2].exists() and clips[3].exists(), "the newest survive"
+
+
+def test_evict_over_byte_cap(store: HistoryStore, tmp_path: Path) -> None:
+    big_old = _clip(tmp_path, "big-old.flac", size=900)
+    small_new = _clip(tmp_path, "small-new.flac", size=100)
+    store.add(
+        seq=1, created_at=1000, now=1000, duration_ms=800,
+        status=DeliveryStatus.PENDING_TRANSCRIBE, audio_path=str(big_old),
+    )
+    store.add(
+        seq=2, created_at=2000, now=2000, duration_ms=800,
+        status=DeliveryStatus.PENDING_TRANSCRIBE, audio_path=str(small_new),
+    )
+
+    released = store.evict_over_cap(max_rows=500, max_bytes=500)
+
+    assert released == [str(big_old)], "newest kept, the budget spent on it first"
+    assert small_new.exists()
+
+
+# --------------------------------------------------------------------------- #
+# startup
+# --------------------------------------------------------------------------- #
+
+
+def test_pending_rows_are_queued_at_startup_in_press_order(
+    store: HistoryStore, tmp_path: Path
+) -> None:
+    """Spec §3: the last run's unfinished rows go to the retry queue; the user
+    sees 'N records waiting'. Press order, because delivery order is press order
+    and a restart does not repeal it."""
+    for i, status in enumerate(
+        (
+            DeliveryStatus.PENDING_RETRY,
+            DeliveryStatus.INSERTED,
+            DeliveryStatus.PENDING_TRANSCRIBE,
+        ),
+        start=1,
+    ):
+        clip = _clip(tmp_path, f"{i}.flac")
+        store.add(
+            seq=i, created_at=i * 1000, now=i * 1000, duration_ms=800,
+            status=status, audio_path=str(clip),
+        )
+
+    pending = store.pending_at_startup()
+    assert [p.seq for p in pending] == [1, 3]
+    assert all(p.audio_path for p in pending)
+
+
+def test_orphan_audio_swept_at_startup(store: HistoryStore, tmp_path: Path) -> None:
+    """Spec §3: a file no row points at is deleted; a row whose file is gone is
+    left alone — it still holds text worth keeping."""
+    referenced = _clip(tmp_path, "referenced.flac")
+    orphan = _clip(tmp_path, "orphan.flac")
+    store.add(
+        seq=1, created_at=1000, now=1000, duration_ms=800,
+        status=DeliveryStatus.PENDING_TRANSCRIBE, audio_path=str(referenced),
+    )
+
+    removed = store.sweep_orphan_audio(tmp_path)
+
+    assert removed == [orphan]
+    assert not orphan.exists()
+    assert referenced.exists()
+
+
+# --------------------------------------------------------------------------- #
+# transcription and search
+# --------------------------------------------------------------------------- #
+
+
+def test_transcription_makes_the_row_searchable(store: HistoryStore, tmp_path: Path) -> None:
+    clip = _clip(tmp_path, "a.flac")
+    rid = store.add(
+        seq=1, created_at=1000, now=1500, duration_ms=800,
+        status=DeliveryStatus.PENDING_TRANSCRIBE, audio_path=str(clip),
+    )
+    assert store.search("Бразилии") == []
+
+    store.record_transcription(
+        rid, text_raw="перезапусти впс в бразилии", text_final="перезапусти VPS в Бразилии",
+        language="ru", provider_id="groq", billed_seconds=1.9, latency_ms=368,
+    )
+    found = store.search("Бразилии")
+    assert [r["id"] for r in found] == [rid]
+    assert found[0]["text_raw"] == "перезапусти впс в бразилии"
+
+
+def test_retry_count_survives_in_the_row(store: HistoryStore, tmp_path: Path) -> None:
+    clip = _clip(tmp_path, "a.flac")
+    rid = store.add(
+        seq=1, created_at=1000, now=1500, duration_ms=800,
+        status=DeliveryStatus.PENDING_RETRY, audio_path=str(clip),
+    )
+    store.increment_retry(rid)
+    store.increment_retry(rid)
+    assert _row(store, rid)["retry_count"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# config (harness §5)
+# --------------------------------------------------------------------------- #
+
+
+def test_missing_config_created_from_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    loaded = load_config(path, now_ms=1000)
+    assert loaded.created
+    assert loaded.config == Config()
+    assert path.exists(), "the defaults are written back so the file exists from day one"
+
+
+def test_corrupt_config_renamed_and_replaced_with_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    path.write_text("{not json", encoding="utf-8")
+
+    loaded = load_config(path, now_ms=777)
+
+    assert loaded.corrupt_backup == tmp_path / "config.corrupt-777.json"
+    assert loaded.corrupt_backup.exists(), "the broken file is kept for inspection"
+    assert loaded.config == Config()
+    assert load_config(path, now_ms=778).config == Config(), "and the new file parses"
+
+
+def test_config_from_the_future_refuses_to_start(tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    save_config(path, Config(schema_version=CONFIG_SCHEMA_VERSION + 5))
+    with pytest.raises(ConfigTooNew):
+        load_config(path, now_ms=1000)
+
+
+def test_saved_config_round_trips_and_tolerates_unknown_keys(tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    config = Config(language="en", retention_minutes=120)
+    save_config(path, config)
+
+    raw = path.read_text(encoding="utf-8")
+    path.write_text(raw.replace('{', '{"from_the_future": true,', 1), encoding="utf-8")
+
+    loaded = load_config(path, now_ms=1000)
+    assert loaded.config == config
+    assert not list(tmp_path.glob("*.tmp-*")), "atomic write leaves no droppings"
+
+
+# --------------------------------------------------------------------------- #
+# secrets (Credential Manager, live)
+# --------------------------------------------------------------------------- #
+
+
+def test_secret_roundtrip_against_the_real_credential_manager() -> None:
+    """Round-trips through the actual Windows Credential Manager — the designated
+    store (spec §13) — under a throwaway target that is deleted either way."""
+    from billytalk.core.store import secrets
+
+    target = f"BillyTalk/test-{uuid.uuid4()}"
+    try:
+        assert secrets.read_secret(target) is None
+        secrets.write_secret(target, "gsk_не-настоящий-ключ")
+        assert secrets.read_secret(target) == "gsk_не-настоящий-ключ"
+    finally:
+        secrets.delete_secret(target)
+    assert secrets.read_secret(target) is None
+    secrets.delete_secret(target)  # deleting the absent is success, not an error
