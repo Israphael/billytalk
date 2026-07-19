@@ -202,7 +202,10 @@ CREATE TABLE history (
 );
 
 CREATE INDEX idx_history_created ON history(created_at DESC);
-CREATE INDEX idx_history_audio   ON history(audio_delivered_at)
+-- ⚠️ Колонка называется audio_release_at. В ранней редакции здесь стояло
+-- audio_delivered_at, которой в таблице нет: SQLite отвечает "no such column",
+-- и DDL не исполняется ЦЕЛИКОМ. Поймано при сборке (OPEN-QUESTIONS §7).
+CREATE INDEX idx_history_audio   ON history(audio_release_at)
        WHERE audio_path IS NOT NULL;
 
 CREATE VIRTUAL TABLE history_fts USING fts5(
@@ -343,14 +346,23 @@ class RedactionFilter(logging.Filter):
 
 ```python
 def test_release_while_initialized_defers_not_cancels():
-    s = Idle
-    s, fx = step(s, PressPTT(), t=0)          # -> Initialized
-    s, fx = step(s, ReleasePTT(), t=10)       # рано!
-    assert s is Initialized                    # НЕ отменено
-    s, fx = step(s, CaptureStarted(), t=50)
-    assert s is Finalizing                     # отложенное применилось
+    s = initial_state()
+    s, fx = step(s, PressPTT(), now=0.0)          # -> Initialized
+    s, fx = step(s, ReleasePTT(), now=0.010)      # рано!
+    assert s.phase is Phase.Initialized           # НЕ отменено
+    s, fx = step(s, CaptureStarted(), now=0.050)
+    assert s.phase is Phase.Finalizing            # отложенное применилось
     assert StopCapture in types(fx)
 ```
+
+⚠️ **`State` — запись, а не скаляр** (спека §4), поэтому сравнение идёт по `s.phase`,
+а не по `s`. В ранней редакции пример был написан как `assert s is Initialized`
+и противоречил спецификации.
+
+⚠️ **Порог в 250 мс к отложенному отпусканию не применяется.** Видимое машине время
+удержания здесь равно нулю, и порог пометил бы каждую такую диктовку как `too_short` —
+то есть сломал бы ровно тот сценарий, ради которого правило отложенного отпускания
+и существует. Пустоту клипа определяет звуковой слой и сообщает событием `ClipEmpty`.
 
 **Обязательные имена тестов** — по одному на ячейку таблицы спеки §4:
 

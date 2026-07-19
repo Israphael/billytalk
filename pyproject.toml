@@ -1,0 +1,46 @@
+[project]
+name = "billytalk"
+version = "0.1.0"
+description = "Windows dictation that does not lose your words"
+readme = "README.md"
+requires-python = ">=3.14"
+license = { file = "LICENSE" }
+
+# Runtime dependencies are deliberately absent from the core state machine: it
+# imports nothing outside the standard library, which is what lets the whole
+# state table be tested on any machine with no hardware at all.
+dependencies = [
+    "sounddevice>=0.5.5",
+    "soundfile>=0.14.0",
+    "numpy>=2.5.1",
+    "pywin32>=312",
+    "wxPython>=4.2.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "hypothesis>=6",
+    "pyinstaller>=6.21",
+]
+
+# No [project.scripts]: harness §11 launches the core as `python -m billytalk.core`,
+# and shipping is PyInstaller --onedir, not a console entry point.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["billytalk*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "UP", "ANN"]
