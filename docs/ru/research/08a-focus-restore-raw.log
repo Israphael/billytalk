@@ -1,0 +1,36 @@
+﻿[1] captured mintty.exe "✳ Найти или создать аналог Whisper Flo" - NOW CLICK ANOTHER WINDOW, checking in 4s
+     switched to claude.exe -> restore mintty.exe: bare FAIL (api=False), attach FAIL (api=False)
+[2] captured claude.exe "Claude" - NOW CLICK ANOTHER WINDOW, checking in 4s
+     switched to mintty.exe -> restore claude.exe: bare FAIL (api=False), attach FAIL (api=False)
+[3] captured Telegram.exe "‎hermesik – (580)" - NOW CLICK ANOTHER WINDOW, checking in 4s
+     switched to claude.exe -> restore Telegram.exe: bare FAIL (api=False), attach FAIL (api=False)
+[4] captured claude.exe "Claude" - NOW CLICK ANOTHER WINDOW, checking in 4s
+[5] captured claude.exe "Claude" - NOW CLICK ANOTHER WINDOW, checking in 4s
+[6] captured chrome.exe "Новая вкладка - Google Chrome" - NOW CLICK ANOTHER WINDOW, checking in 4s
+[7] captured chrome.exe "Новая вкладка - Google Chrome" - NOW CLICK ANOTHER WINDOW, checking in 4s
+[8] captured chrome.exe "Новая вкладка - Google Chrome" - NOW CLICK ANOTHER WINDOW, checking in 4s
+     switched to chrome.exe -> restore claude.exe: bare FAIL (api=False), attach FAIL (api=False)
+     switched to chrome.exe -> restore claude.exe: bare FAIL (api=False), attach FAIL (api=False)
+     switched to explorer.exe -> restore chrome.exe: bare OK (api=True), attach OK (api=True)
+     switched to BTCTools-v1.3.3.exe -> restore chrome.exe: bare OK (api=True), attach OK (api=True)
+[9] captured BTCTools-v1.3.3.exe "BTC Tools v1.3.3" - NOW CLICK ANOTHER WINDOW, checking in 4s
+[10] captured BTCTools-v1.3.3.exe "BTC Tools v1.3.3" - NOW CLICK ANOTHER WINDOW, checking in 4s
+[11] captured BTCTools-v1.3.3.exe "BTC Tools v1.3.3" - NOW CLICK ANOTHER WINDOW, checking in 4s
+[12] captured claude.exe "Claude" - NOW CLICK ANOTHER WINDOW, checking in 4s
+[13] captured claude.exe "Claude" - NOW CLICK ANOTHER WINDOW, checking in 4s
+[14] captured Telegram.exe "‎hermesik – (580)" - NOW CLICK ANOTHER WINDOW, checking in 4s
+[15] captured Telegram.exe "‎hermesik – (580)" - NOW CLICK ANOTHER WINDOW, checking in 4s
+     switched to explorer.exe -> restore claude.exe: bare FAIL (api=False), attach FAIL (api=False)
+                  from -> switched to            bare  attach
+            mintty.exe -> claude.exe             FAIL    FAIL
+            claude.exe -> mintty.exe             FAIL    FAIL
+          Telegram.exe -> claude.exe             FAIL    FAIL
+            claude.exe -> chrome.exe             FAIL    FAIL
+            claude.exe -> chrome.exe             FAIL    FAIL
+            chrome.exe -> explorer.exe             OK      OK
+            claude.exe -> explorer.exe           FAIL    FAIL
+  bare   25%   attach 25%   (8 trials)
+  VERDICT: BEST-EFFORT ONLY - clipboard + hotkey must be the primary path
+     switched to explorer.exe -> restore claude.exe: bare FAIL (api=False), attach FAIL (api=False)
+     switched to explorer.exe -> restore Telegram.exe: bare FAIL (api=False), attach FAIL (api=False)
+     switched to explorer.exe -> restore Telegram.exe: bare FAIL (api=False), attach FAIL (api=False)

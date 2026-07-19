@@ -42,15 +42,15 @@ are licensed separately from the code that loads them.**
   exhaustively in four-plus places, built around file paths, quantisation and GPU device
   selection. There is **zero HTTP transcription**. You would keep the shell and rebuild
   the engine.
-- **openless** — genuinely good code, and 72k lines of Rust with `polish` referenced 120
+- **openless** — genuinely good code, *but* 72k lines of Rust with `polish` referenced 120
   times in one file, a 3,520-line TSF IME, Android, a marketplace, and zh-CN comments
-  throughout.
-- **opentypeless** — closest architectural fit, and eliminated with the stack decision
-  ([ADR-0001](0001-ui-stack.md)): every candidate is Rust/Tauri. Also worth recording:
-  one author under five git identities, no external contributions across 65 forks,
-  a `VISION.md` stating the project was *"built in a single day with the help of Claude
-  Code"*, and an accidentally-committed handoff file admitting *"Windows/Linux real-device
-  smoke tests still need real-environment verification."*
+  throughout. Adapting it would be more surgery than building.
+- **opentypeless** — the closest architectural fit, eliminated by the stack decision
+  ([ADR-0001](0001-ui-stack.md)): every candidate is Rust/Tauri. Worth recording for
+  anyone who revisits it — the code quality is better than its "AI-assisted, built fast"
+  framing suggests: 465 Rust tests, zero `panic!`, deliberate mutex-poisoning recovery,
+  and a genuine provider trait where the others have closed enums. It is a
+  single-maintainer project, so a fork inherits a bus factor of one either way.
 
 **No project supports mouse buttons as a hotkey.** That work exists regardless of base,
 so it cannot discriminate between candidates — and it means a clean, minimal, mouse-capable
