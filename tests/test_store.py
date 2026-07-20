@@ -271,6 +271,24 @@ def test_pending_rows_are_queued_at_startup_in_press_order(
     assert all(p.audio_path for p in pending)
 
 
+def test_count_waiting_counts_only_rows_awaiting_the_network(store: HistoryStore) -> None:
+    """The N in spec §3's offline tooltip «N записей ждут связи»: only the two
+    non-terminal statuses, nothing delivered or failed."""
+    for status in (
+        DeliveryStatus.PENDING_TRANSCRIBE,
+        DeliveryStatus.PENDING_RETRY,
+        DeliveryStatus.PENDING_RETRY,
+        DeliveryStatus.INSERTED,
+        DeliveryStatus.WITHHELD,
+        DeliveryStatus.TRANSCRIBE_FAILED,
+    ):
+        store.add(
+            seq=1, created_at=1000, now=1000, duration_ms=800,
+            status=status, audio_path=None,
+        )
+    assert store.count_waiting() == 3
+
+
 def test_sweep_is_case_insensitive_like_the_filesystem(
     store: HistoryStore, tmp_path: Path
 ) -> None:

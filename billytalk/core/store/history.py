@@ -268,6 +268,17 @@ class HistoryStore:
         ).fetchall()
         return [PendingRow(*row) for row in rows]
 
+    def count_waiting(self) -> int:
+        """How many rows wait for the network — the ``N`` in spec §3's offline
+        tooltip «N записей ждут связи». The same non-terminal statuses the
+        startup scan re-queues (:meth:`pending_at_startup`), counted without
+        materialising the rows."""
+        (count,) = self._conn.execute(
+            "SELECT COUNT(*) FROM history "
+            "WHERE delivery_status IN ('pending_transcribe', 'pending_retry')"
+        ).fetchone()
+        return int(count)
+
     def search(self, query: str, *, limit: int = 50, offset: int = 0) -> list[sqlite3.Row]:
         """FTS5 search over the final text (harness §4: FTS, not LIKE).
 

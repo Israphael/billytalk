@@ -48,6 +48,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from enum import Enum
 from typing import Final
+from uuid import uuid4
 
 __all__ = [
     "HiddenWindow",
@@ -56,6 +57,7 @@ __all__ = [
     "TrayMenuItem",
     "TrayState",
     "tray_state_for",
+    "tray_tooltip_for",
 ]
 
 log = logging.getLogger("billytalk.tray")
@@ -292,17 +294,36 @@ class HiddenWindow(threading.Thread):
 
     # -- the thread ----------------------------------------------------- #
 
+    def _register_class(self, instance: int) -> bool:
+        """Bind our class name to *our* WNDPROC. On ``ERROR_CLASS_ALREADY_EXISTS``
+        the name belongs to a class someone else registered — an earlier window
+        whose class outlived it (``DestroyWindow`` does not unregister), or a
+        second instance — and creating a window on it dispatches every message
+        to that *foreign* WNDPROC, so ``on()`` handlers never fire (cycle-2
+        review tail). Fall back to a name only we hold. Returns ``False`` only on
+        an unrecoverable registration error.
+        """
+        for _ in range(2):
+            wndclass = _WNDCLASSW(
+                0, self._wndproc, 0, 0, instance, None, None, None, None, self._class_name
+            )
+            if _user32.RegisterClassW(ct.byref(wndclass)):
+                return True
+            error = ct.get_last_error()
+            if error != 1410:  # not ERROR_CLASS_ALREADY_EXISTS — nothing to retry
+                log.error("RegisterClassW failed: %d", error)
+                return False
+            # The name is taken by a class whose WNDPROC is not ours. Take a
+            # private one so this window can only reach our _on_message.
+            self._class_name = f"{self._class_name}-{uuid4().hex[:8]}"
+        log.error("could not register a private window class")
+        return False
+
     def run(self) -> None:
         instance = _kernel32.GetModuleHandleW(None)
-        wndclass = _WNDCLASSW(
-            0, self._wndproc, 0, 0, instance, None, None, None, None, self._class_name
-        )
-        if not _user32.RegisterClassW(ct.byref(wndclass)):
-            error = ct.get_last_error()
-            if error != 1410:  # ERROR_CLASS_ALREADY_EXISTS: an earlier window's
-                log.error("RegisterClassW failed: %d", error)
-                self._ready.set()
-                return
+        if not self._register_class(instance):
+            self._ready.set()
+            return
         # ⚠ hWndParent = NULL — a *real* top-level window. HWND_MESSAGE would
         # be tidier and would never hear TaskbarCreated (spec §11).
         self.hwnd = _user32.CreateWindowExW(
@@ -389,6 +410,17 @@ _TOOLTIPS: Final = {
     TrayState.STOPPED: "BillyTalk — диктовка выключена",
     TrayState.ERROR: "BillyTalk — ошибка",
 }
+
+def tray_tooltip_for(state: TrayState, *, waiting: int = 0) -> str:
+    """The icon's hover text. ``OFFLINE`` carries the count spec §3 makes
+    mandatory — «N записей ждут связи» — so the user learns how many dictations
+    are held for the network from the icon alone, not minutes later by silence.
+    Every other state's text is fixed, so ``waiting`` is ignored there.
+    """
+    if state is TrayState.OFFLINE:
+        return f"BillyTalk — нет связи, {waiting} записей ждут"
+    return _TOOLTIPS[state]
+
 
 _DOT_COLORS: Final = {
     TrayState.RECORDING: 0xE81123,  # RGB

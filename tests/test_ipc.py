@@ -297,6 +297,30 @@ def test_taken_name_refuses_a_second_server(server_name) -> None:
     assert raw.value.winerror == winerror.ERROR_ACCESS_DENIED
 
 
+def test_server_refuses_to_join_a_squatters_permissive_pipe() -> None:
+    """FILE_FLAG_FIRST_PIPE_INSTANCE from the defender's side. A squatter takes
+    the name first with a *permissive* pipe (no first-instance flag, room for a
+    second instance): a naive CreateNamedPipe would happily add itself as that
+    second instance and start serving behind the squatter. Our flag makes the
+    name collision fatal instead — start() must raise PipeBusy and never serve.
+    (The sibling test above only shows a *later* creator being blocked; this is
+    the property that protects the core when it starts second.)"""
+    name = _test_name()
+    squatter = win32pipe.CreateNamedPipe(
+        name,
+        win32pipe.PIPE_ACCESS_DUPLEX,  # deliberately WITHOUT FILE_FLAG_FIRST_PIPE_INSTANCE
+        win32pipe.PIPE_TYPE_BYTE | win32pipe.PIPE_READMODE_BYTE | win32pipe.PIPE_WAIT,
+        2,  # nMaxInstances > 1: a naive server could just become instance #2
+        4096, 4096, 0, None,
+    )
+    try:
+        server = IpcServer(name, handler=_echo_handler)
+        with pytest.raises(PipeBusy):
+            server.start()
+    finally:
+        squatter.Close()
+
+
 def test_disconnect_fires_callback_and_frees_the_slot() -> None:
     name = _test_name()
     connected = threading.Event()
@@ -339,7 +363,14 @@ def test_server_push_reaches_the_client(server_name) -> None:
     handle = _connect_raw(name)
     try:
         _handshake_raw(handle)
-        assert server.send({"type": "state_changed", "state": "Idle", "queue_len": 0})
+        # The server flips its connected flag just *after* writing the ack the
+        # raw handshake already read, so the first send() can lose that race
+        # (flake). Poll until the push is accepted, exactly as
+        # test_client_full_loop documents and does.
+        deadline = time.monotonic() + DEADLINE_S
+        while not server.send({"type": "state_changed", "state": "Idle", "queue_len": 0}):
+            assert time.monotonic() < deadline, "server never became connected"
+            time.sleep(0.01)
         message = _read_messages(handle, FrameDecoder(), 1)[0]
         assert message["type"] == "state_changed"
     finally:
@@ -443,6 +474,37 @@ def test_client_close_is_quiet() -> None:
     client.close()
     assert not dropped.wait(0.3)
     server.stop()
+
+
+def test_client_reconnects_on_the_same_object_after_close(server_name) -> None:
+    """The core dies, the UI shows «остановлен», the core comes back and the UI
+    reconnects (harness §2). close() latched the stop event and the closing
+    flag; before the fix a second connect() built a channel whose every read
+    died instantly on the stale signal — the reader delivered nothing."""
+    name, server = server_name
+    inbox: list[dict[str, Any]] = []
+    got = threading.Event()
+
+    def on_message(message: dict[str, Any]) -> None:
+        inbox.append(message)
+        got.set()
+
+    client = IpcClient(name, on_message=on_message, expected_image=None)
+    client.connect()
+    client.close()
+    got.clear()
+    inbox.clear()
+    client.connect()  # same object, second time
+    try:
+        assert client.core_version
+        deadline = time.monotonic() + DEADLINE_S
+        while not server.send({"type": "usage_updated", "words_this_week": 1}):
+            assert time.monotonic() < deadline, "server never accepted the reconnect"
+            time.sleep(0.01)
+        assert got.wait(DEADLINE_S), "reader delivered nothing after reconnect"
+        assert inbox[0]["type"] == "usage_updated"
+    finally:
+        client.close()
 
 # --------------------------------------------------------------------------- #
 # regressions from the cycle-2 adversarial review (all confirmed live there)

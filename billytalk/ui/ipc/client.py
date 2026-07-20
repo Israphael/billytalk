@@ -107,6 +107,16 @@ class IpcClient:
     # ------------------------------------------------------------------ #
 
     def connect(self, *, timeout_ms: int = 5_000) -> None:
+        # A client may reconnect after close(): the core died, the UI showed
+        # «остановлен», the core came back (harness §2). close() latched the
+        # stop event and the closing flag, so a fresh connection must clear them
+        # and start a fresh decoder — otherwise every read on the new handle
+        # dies on the stale death signal (cycle-2 review tail). No-ops on a
+        # first connect.
+        self._closing.clear()
+        win32event.ResetEvent(self._stop_win32)
+        self._decoder = FrameDecoder()
+        self.core_version = None
         self._handle = self._open_pipe(timeout_ms)
         self._channel = OverlappedPipe(self._handle, self._stop_win32)
         try:

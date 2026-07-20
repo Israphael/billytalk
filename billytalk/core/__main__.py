@@ -34,7 +34,7 @@ from .stt.groq import GroqProvider
 from .store import CleanupGate, HistoryStore, connect, ensure_schema, load_config
 from .store import secrets
 from .text.dictionary import Dictionary
-from .tray import HiddenWindow, TrayIcon, TrayMenuItem, tray_state_for
+from .tray import HiddenWindow, TrayIcon, TrayMenuItem, tray_state_for, tray_tooltip_for
 
 log = logging.getLogger("billytalk.main")
 
@@ -197,14 +197,18 @@ def main() -> int:
         tray_ref = tray
 
         def publish(state) -> None:  # driver thread; display only
-            tray_ref.set_state(
-                tray_state_for(
-                    phase_name=state.phase.name,
-                    enabled=state.enabled,
-                    offline=gate.offline,
-                    queue_len=len(state.queue),
-                )
+            tstate = tray_state_for(
+                phase_name=state.phase.name,
+                enabled=state.enabled,
+                offline=gate.offline,
+                queue_len=len(state.queue),
             )
+            # count_waiting() touches the store on the driver thread — the one
+            # that owns the single SQLite connection — so it is safe here. Only
+            # the offline icon shows a number (spec §3), so only offline pays for
+            # the query.
+            waiting = store.count_waiting() if tstate is TrayState.OFFLINE else 0
+            tray_ref.set_state(tstate, tooltip=tray_tooltip_for(tstate, waiting=waiting))
 
         deps.publish_state = publish
 
