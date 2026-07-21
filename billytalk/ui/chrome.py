@@ -42,6 +42,7 @@ __all__ = [
     "FALLBACK_UI_FONT",
     "FALLBACK_GLYPH_FONT",
     "apply_dark_titlebar",
+    "apply_explorer_theme",
     "apply_mica",
     "resolve_face",
     "system_is_dark",
@@ -88,6 +89,10 @@ _dwmapi.DwmSetWindowAttribute.restype = ct.c_long  # HRESULT
 _dwmapi.DwmSetWindowAttribute.argtypes = (
     wintypes.HWND, wintypes.DWORD, ct.c_void_p, wintypes.DWORD,
 )
+
+_uxtheme = ct.WinDLL("uxtheme", use_last_error=True)
+_uxtheme.SetWindowTheme.restype = ct.c_long  # HRESULT
+_uxtheme.SetWindowTheme.argtypes = (wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR)
 
 # --------------------------------------------------------------------------- #
 # pure decisions — functions of the build number, testable on any machine
@@ -160,6 +165,15 @@ def apply_mica(hwnd: int, *, build: int) -> bool:
         )
         == 0
     )
+
+
+def apply_explorer_theme(hwnd: int, *, dark: bool) -> bool:
+    """``DarkMode_Explorer`` on a list or scrollbar control — the hand-built
+    part of dark mode on wxWidgets 3.2.9 (spec §05: «uxtheme DarkMode_Explorer
+    для списков/скроллбаров»), giving native dark scrollbars and selection.
+    Light mode restores the stock ``Explorer`` theme."""
+    theme = "DarkMode_Explorer" if dark else "Explorer"
+    return _uxtheme.SetWindowTheme(hwnd, theme, None) == 0
 
 
 # --------------------------------------------------------------------------- #

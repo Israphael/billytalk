@@ -25,6 +25,8 @@ from ..core.logging_setup import configure_logging
 from .controller import UiController
 from .ipc.client import IpcClient
 from .overlay import Plashka
+from .windows.history import HistoryFrame
+from .windows.settings import SettingsFrame
 
 log = logging.getLogger("billytalk.ui.main")
 
@@ -65,6 +67,28 @@ def main(argv: list[str] | None = None) -> int:
         plashka.destroy()
         return 2
     controller.send = client.send
+
+    # The windows are singletons per kind: a second tray click raises the
+    # living frame instead of stacking twins. wx truthiness goes False once
+    # the underlying window is destroyed, so a closed frame rebuilds.
+    frames: dict[str, wx.Frame] = {}
+
+    def raise_or_build(name: str, build) -> None:
+        frame = frames.get(name)
+        if frame:
+            frame.Show()
+            frame.Raise()
+            return
+        frame = build()
+        frames[name] = frame
+        frame.Show()
+
+    controller.open_settings = lambda: raise_or_build(
+        "settings", lambda: SettingsFrame(controller)
+    )
+    controller.open_history = lambda: raise_or_build(
+        "history", lambda: HistoryFrame(controller)
+    )
     controller.push_menu()  # fill the tray menu straight away
     log.info("connected to core %s", client.core_version)
 
