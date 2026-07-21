@@ -29,6 +29,7 @@ recorded on (no splicing).
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from enum import Enum, auto
 from typing import Final
@@ -56,7 +57,8 @@ DBT_DEVICEREMOVECOMPLETE: Final = 0x8004
 
 class Action(Enum):
     NONE = auto()
-    SUSPEND = auto()      # finalise + save + drop suppression (spec §3)
+    SUSPEND = auto()      # sleep: finalise + save + drop suppression (spec §3)
+    QUERY_END_SESSION = auto()  # save while blocking shutdown, then allow it
     RESUME = auto()       # re-enumerate, reinstall hook, reset watchdog
     END_SESSION = auto()  # log off / shutdown committed → exit
     DEVICE_CHANGE = auto()  # refresh the device list when the stream is idle
@@ -64,8 +66,8 @@ class Action(Enum):
 
 def classify(message: int, wparam: int) -> Action:
     """One Win32 system message → the action it means. Pure; the ``__main__``
-    binding performs it. ``WM_QUERYENDSESSION`` maps to ``SUSPEND`` (save now,
-    return TRUE); the committing ``WM_ENDSESSION`` maps to ``END_SESSION``."""
+    binding performs it. ``WM_QUERYENDSESSION`` gets its own action because it
+    must block the shutdown while it saves (spec §3), unlike a plain sleep."""
     if message == WM_POWERBROADCAST:
         if wparam == PBT_APMSUSPEND:
             return Action.SUSPEND
@@ -73,7 +75,7 @@ def classify(message: int, wparam: int) -> Action:
             return Action.RESUME
         return Action.NONE
     if message == WM_QUERYENDSESSION:
-        return Action.SUSPEND
+        return Action.QUERY_END_SESSION
     if message == WM_ENDSESSION:
         # wParam TRUE = the session is really ending; FALSE = an earlier
         # end-session was cancelled, nothing to do.
@@ -104,6 +106,9 @@ class SystemEvents:
         reload_devices: Callable[[], None],
         reinstall_hook: Callable[[], None],
         reset_watchdog: Callable[[], None],
+        block_shutdown: Callable[[], None] = lambda: None,
+        unblock_shutdown: Callable[[], None] = lambda: None,
+        save_timeout_s: float = 4.0,
     ) -> None:
         self._post_event = post_event
         self._post_job = post_job
@@ -111,7 +116,11 @@ class SystemEvents:
         self._reload_devices = reload_devices
         self._reinstall_hook = reinstall_hook
         self._reset_watchdog = reset_watchdog
+        self._block_shutdown = block_shutdown
+        self._unblock_shutdown = unblock_shutdown
+        self._save_timeout_s = save_timeout_s
         self._reload_pending = False  # driver thread only
+        self._reload_queued = False   # dedup device-change bursts
 
     def register(self, window: object) -> None:
         """Wire our handlers onto a ``HiddenWindow`` (``.on(message, handler)``).
@@ -123,19 +132,51 @@ class SystemEvents:
         on(WM_DEVICECHANGE, lambda w, l: self._handle(WM_DEVICECHANGE, w) or 1)
 
     def _handle(self, message: int, wparam: int) -> None:
-        """Window thread: classify and dispatch, enqueue-only."""
+        """Window thread: classify and dispatch. Enqueue-only, except
+        QUERY_END_SESSION, which must hold the shutdown off until the save
+        lands (spec §3) — the one place blocking the window thread is correct,
+        because the OS is waiting for this very return."""
         action = classify(message, wparam)
         if action is Action.SUSPEND:
-            # Save everything in flight (spec §3). The machine's Suspend closes
-            # the stream and drops suppression; the audio is already durable at
-            # StopCapture, so a few milliseconds before sleep suffice.
+            # Sleep: the machine's Suspend closes the stream and drops
+            # suppression; the audio is already durable at StopCapture.
             self._post_event(Suspend())
+        elif action is Action.QUERY_END_SESSION:
+            self._save_before_shutdown()
         elif action is Action.END_SESSION:
             self._post_event(Exit())
         elif action is Action.RESUME:
             self._post_job(self._resume_job)
         elif action is Action.DEVICE_CHANGE:
-            self._post_job(self._device_job)
+            # Windows emits several DBT_DEVNODES_CHANGED per plug; collapse the
+            # burst to one reload rather than N × 42 ms (M4 review, low).
+            if not self._reload_queued:
+                self._reload_queued = True
+                self._post_job(self._device_job)
+
+    def _save_before_shutdown(self) -> None:
+        """Spec §3: «немедленно сохранить всё в полёте и вернуть TRUE.
+        ShutdownBlockReasonCreate только на время сохранения». Block the
+        shutdown, finalise on the driver thread, wait for the save to land
+        (bounded — a hung driver must not forfeit the whole logoff), release.
+
+        The audio for the in-flight clip is memory-only until PersistAudio
+        encodes it (a multi-minute FLAC can outlast the ungranted ~5 s grace),
+        so returning TRUE before the save finished could lose the recording —
+        exactly the case ShutdownBlockReasonCreate exists for (M4 review)."""
+        saved = threading.Event()
+        self._block_shutdown()
+        try:
+            # FIFO on the driver's one queue: Suspend finalises (StopCapture →
+            # PersistAudio → WriteHistory, all synchronous in one dispatch),
+            # then this marker runs and signals — so the wait returns only
+            # once the clip is on disk and its row written.
+            self._post_event(Suspend())
+            self._post_job(saved.set)
+            if not saved.wait(self._save_timeout_s):
+                log.warning("shutdown save did not confirm in time; allowing logoff")
+        finally:
+            self._unblock_shutdown()
 
     # -- driver-thread jobs --------------------------------------------- #
 
@@ -147,6 +188,8 @@ class SystemEvents:
         self._device_job()
 
     def _device_job(self) -> None:
+        # Consumed: a change arriving after this point queues a fresh job.
+        self._reload_queued = False
         if self._stream_open():
             # A change mid-recording: the current dictation finalises on the
             # device it was recorded on (spec §5, no splicing). Defer the

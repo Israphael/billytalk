@@ -7,6 +7,7 @@ the console (harness §9's "предусмотреть завершение по
 
 from __future__ import annotations
 
+import ctypes as ct
 import gc
 import logging
 import os
@@ -14,6 +15,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from ctypes import wintypes
 from pathlib import Path
 
 import win32api
@@ -49,6 +51,26 @@ from .ui_launch import UiHost
 from .wiring import TrayMenuBridge, UiMessageRouter, connect_greeting, plan_publish
 
 log = logging.getLogger("billytalk.main")
+
+# ShutdownBlockReasonCreate holds the logoff/shutdown off while we save an
+# in-flight dictation (spec §3). HWND overflows the default c_int restype, so
+# argtypes are pinned — the recurring 64-bit truncation trap (research/02).
+_user32 = ct.WinDLL("user32", use_last_error=True)
+_user32.ShutdownBlockReasonCreate.restype = wintypes.BOOL
+_user32.ShutdownBlockReasonCreate.argtypes = (wintypes.HWND, wintypes.LPCWSTR)
+_user32.ShutdownBlockReasonDestroy.restype = wintypes.BOOL
+_user32.ShutdownBlockReasonDestroy.argtypes = (wintypes.HWND,)
+
+
+def _block_shutdown(hwnd: int | None) -> None:
+    if hwnd:
+        _user32.ShutdownBlockReasonCreate(hwnd, "BillyTalk сохраняет диктовку")
+
+
+def _unblock_shutdown(hwnd: int | None) -> None:
+    if hwnd:
+        _user32.ShutdownBlockReasonDestroy(hwnd)
+
 
 _ACTION_HINTS: dict[ErrorCode, str] = {
     ErrorCode.MIC_DENIED: "откройте Параметры → Конфиденциальность → Микрофон",
@@ -114,12 +136,18 @@ def main() -> int:
     # only thread that ever calls the insert ladder (verify.py's contract).
     inserter = Inserter(clipboard, verifier=InsertVerifier())
 
+    # PortAudio's device list is frozen between reloads, so enumerating it on
+    # every press (the dictation-start hot path) is redundant latency — cache
+    # it and refresh only when a device change actually reloads the library
+    # (M4 review, low). Driver thread touches both, so no lock.
+    device_names_cache: list[str] = input_device_names()
+
     def chosen_input_device() -> str | None:
-        # Spec §5's ranked auto-fallback, resolved fresh at each stream open so
-        # a device that came back since last time is picked up. An enumeration
-        # failure falls through to the system default (None).
+        # Spec §5's ranked auto-fallback against the cached list; a device that
+        # came back is picked up after the next reload refreshes the cache. A
+        # failed enumeration is an empty cache → the system default (None).
         return resolve_input_device(
-            config.audio_input_ranking, input_device_names(),
+            config.audio_input_ranking, device_names_cache,
             current=config.audio_input_device,
         )
     stt_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="billytalk-stt")
@@ -322,12 +350,15 @@ def main() -> int:
     _STREAM_PHASES = frozenset({"Initialized", "Recording"})
 
     def reload_devices() -> None:
-        # Driver thread: refresh PortAudio's frozen list, then tell the
-        # interface. The stream is provably closed — SystemEvents gated it.
+        # Driver thread: refresh PortAudio's frozen list and the cache the
+        # press path reads, then tell the interface. The stream is provably
+        # closed — SystemEvents gated it.
+        nonlocal device_names_cache
         reload_portaudio()
+        device_names_cache = input_device_names()
         server.send({
             "type": "device_list_changed",
-            "inputs": input_device_names(),
+            "inputs": device_names_cache,
             "outputs": [],
         })
 
@@ -338,6 +369,8 @@ def main() -> int:
         reload_devices=reload_devices,
         reinstall_hook=deps.request_hook_reinstall,
         reset_watchdog=lambda: hook_holder[0].note_probe_sent() if hook_holder else None,
+        block_shutdown=lambda: _block_shutdown(window.hwnd),
+        unblock_shutdown=lambda: _unblock_shutdown(window.hwnd),
     )
     if window.hwnd:
         system_events.register(window)
