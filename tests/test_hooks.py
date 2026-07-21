@@ -296,3 +296,85 @@ def test_live_watchdog_echo_round_trip() -> None:
         assert dog.probe() is True, "a live hook must see its own echo mark"
     finally:
         hook.stop()  # type: ignore[attr-defined]
+
+
+# --------------------------------------------------------------------------- #
+# M3: capture mode (spec §12/§14) and the Ctrl+Alt chords (spec §2, §9)
+# --------------------------------------------------------------------------- #
+
+CAPTURING = HookSnapshot(
+    bound=frozenset({PTT}), suppress=True, recording=False, capture=True
+)
+CHORDED = HookSnapshot(
+    bound=frozenset({PTT}), suppress=True, recording=False,
+    chords=frozenset({0x5A, 0x58}),
+)
+
+
+def test_capture_swallows_and_reports_any_press_and_its_release() -> None:
+    edges = EdgeLogic()
+    down = edges.on_edge(4100, pressed=True, now_ms=0, snapshot=CAPTURING)
+    assert down.suppress and down.event == "capture" and down.code == 4100
+    # Capture ended before the release — pairing still swallows it.
+    up = edges.on_edge(4100, pressed=False, now_ms=50, snapshot=ARMED)
+    assert up.suppress, "a swallowed press must swallow its release, capture or not"
+
+
+def test_capture_swallows_bare_modifiers_silently() -> None:
+    edges = EdgeLogic()
+    for vk in (0x11, 0xA4, 0x10, 0x5B):  # Ctrl, RAlt, Shift, LWin
+        decision = edges.on_edge(vk, pressed=True, now_ms=0, snapshot=CAPTURING)
+        assert decision.suppress, f"modifier {vk:#x} leaked through capture"
+        assert decision.event is None, "a bare modifier must never BE the capture"
+
+
+def test_capture_esc_cancels_and_is_swallowed_with_its_release() -> None:
+    edges = EdgeLogic()
+    down = edges.on_edge(CODE_ESC, pressed=True, now_ms=0, snapshot=CAPTURING)
+    assert down.suppress and down.event == "capture_cancel"
+    up = edges.on_edge(CODE_ESC, pressed=False, now_ms=30, snapshot=ARMED)
+    assert up.suppress and up.event is None
+
+
+def test_capture_does_not_hijack_the_esc_double_tap_bookkeeping() -> None:
+    """An Esc spent on cancelling capture must not arm the 400 ms window: the
+    next ordinary Esc is a first press, not a phantom double."""
+    edges = EdgeLogic()
+    edges.on_edge(CODE_ESC, pressed=True, now_ms=0, snapshot=CAPTURING)
+    edges.on_edge(CODE_ESC, pressed=False, now_ms=30, snapshot=ARMED)
+    again = edges.on_edge(CODE_ESC, pressed=True, now_ms=100, snapshot=RECORDING)
+    assert again.event == "esc", "the capture cancel leaked into the double window"
+
+
+def test_chord_ready_press_fires_and_only_the_final_key_is_swallowed() -> None:
+    edges = EdgeLogic()
+    down = edges.on_edge(0x5A, pressed=True, now_ms=0, snapshot=CHORDED, chord_ready=True)
+    assert down.suppress and down.event == "chord" and down.code == 0x5A
+    up = edges.on_edge(0x5A, pressed=False, now_ms=40, snapshot=CHORDED)
+    assert up.suppress and up.event is None, "the release pairs with its press"
+
+
+def test_chord_key_without_modifiers_passes_untouched() -> None:
+    edges = EdgeLogic()
+    down = edges.on_edge(0x5A, pressed=True, now_ms=0, snapshot=CHORDED, chord_ready=False)
+    assert not down.suppress and down.event is None, "plain Z belongs to the app"
+    up = edges.on_edge(0x5A, pressed=False, now_ms=40, snapshot=CHORDED)
+    assert not up.suppress
+
+
+def test_chord_autorepeat_fires_no_second_event() -> None:
+    """A held Ctrl+Alt+Z auto-repeats at the keyboard rate; only the first
+    press may act, or ten pastes arrive from one gesture."""
+    edges = EdgeLogic()
+    first = edges.on_edge(0x5A, pressed=True, now_ms=0, snapshot=CHORDED, chord_ready=True)
+    assert first.event == "chord"
+    repeat = edges.on_edge(0x5A, pressed=True, now_ms=30, snapshot=CHORDED, chord_ready=True)
+    assert repeat.event is None and repeat.suppress, "auto-repeat must stay swallowed"
+
+
+def test_capture_takes_priority_over_a_bound_press() -> None:
+    """During capture even the current PTT button is a candidate, not a
+    dictation start."""
+    edges = EdgeLogic()
+    down = edges.on_edge(PTT, pressed=True, now_ms=0, snapshot=CAPTURING)
+    assert down.event == "capture" and down.suppress

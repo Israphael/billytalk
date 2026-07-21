@@ -143,6 +143,15 @@ class DriverDeps:
     audio_cap_rows: int = 500
     audio_cap_bytes: int = 2 * 1024**3
     bound_codes: frozenset[int] = frozenset({4099})
+    chord_codes: frozenset[int] = frozenset()
+    """Final VK codes of the Ctrl+Alt chords (spec §2: Z and X); production
+    passes them, the cycle-1 tests keep the empty default."""
+    on_chord: Callable[[int], None] | None = None
+    """Hook-thread callable for a fired chord — must only enqueue (the hotkey
+    actions post a driver-thread job)."""
+    on_capture: Callable[[str, int], None] | None = None
+    """Hook-thread callable for capture events («capture» с кодом /
+    «capture_cancel») — must only enqueue."""
     publish_state: Callable[[State], None] | None = None
     """Observer for cycle 2's display surfaces (tray icon, IPC
     ``state_changed``): called on the driver thread after every step with the
@@ -236,6 +245,9 @@ class Driver:
         self._dictations: dict[int, _DictationState] = {}
         self._pending_target: Any = None
         self._suppress = True
+        self.capture_mode = False
+        """Hotkey capture (spec §14). Driver thread only; the capture service
+        flips it inside post_job jobs and re-syncs the snapshot itself."""
         self._shutdown = threading.Event()
         self.scheduler.at(self.deps.now_ms() + HOUSEKEEPING_INTERVAL_MS, self._housekeeping)
 
@@ -263,9 +275,17 @@ class Driver:
         until the first dictation of this run."""
         return self._pending_target
 
+    def set_capture_mode(self, on: bool) -> None:
+        """Driver thread only (the capture service calls it inside post_job
+        jobs): flip hotkey capture and push the fresh snapshot to the hook."""
+        self.capture_mode = on
+        self._sync_hook_snapshot()
+
     def on_hook_event(self, hook_event: Any) -> None:
         """Adapter for ``HookThread``. Runs on the hook thread — translation
-        only; the capture-target lookup waits for the driver thread."""
+        only; the capture-target lookup waits for the driver thread. The M3
+        kinds route to injected enqueue-only callables (the hotkey services),
+        never into the machine."""
         kind = hook_event.kind
         if kind == "press":
             self.post(PressPTT())
@@ -275,6 +295,12 @@ class Driver:
             self.post(EscPressed())
         elif kind == "double_esc":
             self.post(DoubleEsc())
+        elif kind == "chord":
+            if self.deps.on_chord is not None:
+                self.deps.on_chord(hook_event.code)
+        elif kind in ("capture", "capture_cancel"):
+            if self.deps.on_capture is not None:
+                self.deps.on_capture(kind, hook_event.code)
 
     # ------------------------------------------------------------------ #
     # the loop (production) and the step (tests)
@@ -394,6 +420,8 @@ class Driver:
                 bound=self.deps.bound_codes,
                 suppress=self._suppress and self.state.enabled,
                 recording=recording,
+                capture=self.capture_mode,
+                chords=self.deps.chord_codes,
             )
         )
 

@@ -332,3 +332,26 @@ def test_history_export_refuses_arbitrary_writes(
         "history_export", {"id": 22, "format": format_, "path": wire}
     )
     assert frame == {"type": "reply", "id": 22, "error": "bad_path"}
+
+
+# --------------------------------------------------------------------------- #
+# capture verbs delegate to the hotkey capture (M3)
+# --------------------------------------------------------------------------- #
+
+
+def test_capture_verbs_delegate_to_the_hotkey_capture(world: World) -> None:
+    calls: list[tuple[Any, ...]] = []
+    world.services._hotkey_capture = SimpleNamespace(
+        start=lambda rid, action: calls.append(("start", rid, action)),
+        stop=lambda rid: calls.append(("stop", rid)),
+    )
+    assert world.services.handle(
+        "capture_hotkey_start", {"id": 30, "action": "ptt"}
+    ) is None
+    assert world.services.handle("capture_hotkey_stop", {"id": 31}) is None
+    assert calls == [("start", 30, "ptt"), ("stop", 31)]
+
+
+def test_capture_verbs_without_a_capture_service_answer_unimplemented(world: World) -> None:
+    frame = world.services.handle("capture_hotkey_start", {"id": 32, "action": "ptt"})
+    assert frame == {"type": "reply", "id": 32, "error": "unimplemented"}

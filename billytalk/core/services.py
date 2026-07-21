@@ -54,6 +54,7 @@ SERVICE_VERBS: Final = frozenset({
     "get_config", "set_config",
     "history_search", "history_insert", "history_export",
     "dictionary_get", "dictionary_set",
+    "capture_hotkey_start", "capture_hotkey_stop",
 })
 
 _SEARCH_CAP: Final = 200
@@ -116,6 +117,7 @@ class UiServices:
         current_dictionary: Callable[[], Dictionary],
         apply_config_to_deps: Callable[[], None],
         has_groq_key: Callable[[], bool],
+        hotkey_capture: Any | None = None,
     ) -> None:
         self._config = config
         self._config_path = config_path
@@ -132,6 +134,7 @@ class UiServices:
         self._current_dictionary = current_dictionary
         self._apply_config_to_deps = apply_config_to_deps
         self._has_groq_key = has_groq_key
+        self._hotkey_capture = hotkey_capture
         self._ro_lock = threading.Lock()
         self._ro_conn: sqlite3.Connection | None = None
 
@@ -158,6 +161,12 @@ class UiServices:
             return self._history_insert(rid, message.get("row_id"))
         if kind == "history_export":
             return self._history_export(rid, message.get("format"), message.get("path"))
+        if kind == "capture_hotkey_start" and self._hotkey_capture is not None:
+            self._hotkey_capture.start(rid, message.get("action"))
+            return None  # the reply comes from the driver-thread job
+        if kind == "capture_hotkey_stop" and self._hotkey_capture is not None:
+            self._hotkey_capture.stop(rid)
+            return None
         return reply(rid, error="unimplemented") if rid is not None else None
 
     def _reply_frame(

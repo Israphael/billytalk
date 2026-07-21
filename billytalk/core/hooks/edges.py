@@ -19,6 +19,18 @@ The rules, verbatim from spec §2:
 * A single Esc always passes through; two presses within 400 ms are coalesced
   into ``double_esc`` **here**, because the machine's state record has no field
   for the window (OPEN-QUESTIONS §11).
+
+Milestone M3 adds two modes, both still pure:
+
+* **Capture** (spec §12 «живой захват», §14's 30 s/channel-break release): any
+  press is swallowed and reported as ``capture`` — except bare modifiers,
+  which are swallowed silently (they would otherwise *be* the captured key
+  the instant the user started an intended chord), and Esc, which cancels.
+  The pairing rule keeps every swallowed press's release swallowed too, so
+  leaving capture never strands a key in the target application.
+* **Chords** (spec §2: Ctrl+Alt+Z / Ctrl+Alt+X): the ctypes layer reads the
+  modifier state — impure — and passes ``chord_ready``; this logic only
+  decides. **Только конечная клавиша подавляется**, the modifiers never.
 """
 
 from __future__ import annotations
@@ -28,9 +40,17 @@ from typing import Final, Literal
 
 from .keycodes import CODE_ESC
 
-__all__ = ["ESC_WINDOW_MS", "EdgeDecision", "EdgeLogic", "HookSnapshot"]
+__all__ = ["ESC_WINDOW_MS", "MODIFIER_VKS", "EdgeDecision", "EdgeLogic", "HookSnapshot"]
 
 ESC_WINDOW_MS: Final = 400
+
+MODIFIER_VKS: Final = frozenset({
+    0x10, 0xA0, 0xA1,  # Shift, LShift, RShift
+    0x11, 0xA2, 0xA3,  # Ctrl, LCtrl, RCtrl
+    0x12, 0xA4, 0xA5,  # Alt, LAlt, RAlt
+    0x5B, 0x5C,        # LWin, RWin
+})
+"""Bare modifiers: swallowed silently in capture, never captured themselves."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,9 +69,18 @@ class HookSnapshot:
     bound: frozenset[int]
     suppress: bool
     recording: bool
+    capture: bool = False
+    """Hotkey-capture mode (spec §12/§14): the next non-modifier press is
+    swallowed and reported instead of acted on; Esc cancels."""
+    chords: frozenset[int] = frozenset()
+    """Final VK codes that fire as ``chord`` when Ctrl+Alt are held (spec §2:
+    Z and X). Suppressed unconditionally — these keys carry no legacy meaning
+    the way Mouse 4's Back does, so «подавление снимается» does not apply."""
 
 
-EventKind = Literal["press", "release", "esc", "double_esc"]
+EventKind = Literal[
+    "press", "release", "esc", "double_esc", "capture", "capture_cancel", "chord"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,8 +123,13 @@ class EdgeLogic:
             or code in self._foreign_down
         )
 
-    def on_edge(self, code: int, *, pressed: bool, now_ms: int, snapshot: HookSnapshot) -> EdgeDecision:
-        """Decide for one edge of one interesting code (a bound code or Esc).
+    def on_edge(
+        self, code: int, *, pressed: bool, now_ms: int, snapshot: HookSnapshot,
+        chord_ready: bool = False,
+    ) -> EdgeDecision:
+        """Decide for one edge of one interesting code (bound, Esc, capture,
+        or a chord final with its modifiers held — ``chord_ready`` is the
+        ctypes layer's impure ``GetAsyncKeyState`` read, passed as data).
 
         Uninteresting codes never reach this method — the ctypes callback passes
         them through before doing any work, to stay far inside the 1000 ms
@@ -122,10 +156,21 @@ class EdgeLogic:
                     suppress=code in self._suppressed_down, event=None, code=code
                 )
             self._keys_down.add(code)
+            if snapshot.capture:
+                # Capture swallows every press. Bare modifiers report nothing —
+                # they would otherwise BE the captured key the moment the user
+                # started an intended chord; the final key is the answer.
+                self._suppressed_down.add(code)
+                event = None if code in MODIFIER_VKS else "capture"
+                return EdgeDecision(suppress=True, event=event, code=code)
+            if chord_ready and code in snapshot.chords:
+                # Ctrl+Alt+<final> (spec §2): only the final key is swallowed.
+                self._suppressed_down.add(code)
+                return EdgeDecision(suppress=True, event="chord", code=code)
             suppress = snapshot.suppress and code in snapshot.bound
             if suppress:
                 self._suppressed_down.add(code)
-            event: EventKind | None = "press" if code in snapshot.bound else None
+            event = "press" if code in snapshot.bound else None
             return EdgeDecision(suppress=suppress, event=event, code=code)
 
         # Release: pairing outranks everything (spec §2).
@@ -147,6 +192,13 @@ class EdgeLogic:
                 suppress=CODE_ESC in self._suppressed_down, event=None, code=CODE_ESC
             )
         self._keys_down.add(CODE_ESC)
+
+        if snapshot.capture:
+            # Esc is the capture's cancel gesture (the NVDA convention) — it is
+            # aimed at us, so it is swallowed; the pairing rule swallows its
+            # release. It must never double as a capturable key.
+            self._suppressed_down.add(CODE_ESC)
+            return EdgeDecision(suppress=True, event="capture_cancel", code=CODE_ESC)
 
         # Wrap-aware: now_ms is MSLLHOOKSTRUCT.time, a DWORD tick that wraps
         # every 49.7 days. A raw subtraction across the wrap goes hugely

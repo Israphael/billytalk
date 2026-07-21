@@ -274,6 +274,22 @@ class HistoryStore:
             "SELECT * FROM history WHERE id = ?", (row_id,)
         ).fetchone()
 
+    def last_shown(self) -> sqlite3.Row | None:
+        """Spec §9's «последнее»: the freshest row **by press time** whose text
+        was shown to the user — delivered, left on the clipboard, withheld or
+        refused loudly. Retry-track arrivals are excluded (``retry_count`` > 0):
+        otherwise a seven-minute-old text lands in PuTTY by Ctrl+Alt+Z."""
+        return self._conn.execute(
+            """
+            SELECT * FROM history
+             WHERE retry_count = 0
+               AND delivery_status IN (
+                   'inserted', 'left_on_clipboard', 'withheld',
+                   'focus_lost', 'verify_impossible', 'blocked_secure')
+             ORDER BY created_at DESC LIMIT 1
+            """
+        ).fetchone()
+
     def count_waiting(self) -> int:
         """How many rows wait for the network — the ``N`` in spec §3's offline
         tooltip «N записей ждут связи». The same non-terminal statuses the

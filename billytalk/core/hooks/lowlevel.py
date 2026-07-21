@@ -134,9 +134,30 @@ _MOUSEEVENTF_XUP: Final = 0x0100
 class HookEvent:
     """One raw edge, delivered on the hook thread. The consumer only enqueues."""
 
-    kind: str  # "press" | "release" | "esc" | "double_esc"
+    kind: str  # "press" | "release" | "esc" | "double_esc" | "capture" | "capture_cancel" | "chord"
     code: int
     tick_ms: int
+
+
+_VK_SHIFT: Final = 0x10
+_VK_CONTROL: Final = 0x11
+_VK_MENU: Final = 0x12
+_VK_LWIN: Final = 0x5B
+_VK_RWIN: Final = 0x5C
+
+
+def _chord_modifiers_ready() -> bool:
+    """Strictly Ctrl+Alt: Shift or Win on top makes it a different chord and
+    must fall through to the application untouched (spec §2). Four
+    ``GetAsyncKeyState`` reads, ~1 µs each — far inside the callback budget."""
+    down = 0x8000
+    return bool(
+        _user32.GetAsyncKeyState(_VK_CONTROL) & down
+        and _user32.GetAsyncKeyState(_VK_MENU) & down
+        and not (_user32.GetAsyncKeyState(_VK_SHIFT) & down)
+        and not (_user32.GetAsyncKeyState(_VK_LWIN) & down)
+        and not (_user32.GetAsyncKeyState(_VK_RWIN) & down)
+    )
 
 
 def _vk_for_code(code: int) -> int:
@@ -315,7 +336,12 @@ class HookThread(threading.Thread):
                 # Bound OR tracked: a release whose code was unbound mid-hold
                 # must still reach EdgeLogic, or the pairing rule dies at this
                 # gate and the app gets an orphaned WM_XBUTTONUP — browser Back.
-                if code in snapshot.bound or (self._edges is not None and self._edges.tracks(code)):
+                # Capture mode admits every X-button — that is what it is for.
+                if (
+                    code in snapshot.bound
+                    or snapshot.capture
+                    or (self._edges is not None and self._edges.tracks(code))
+                ):
                     return self._decide(
                         code, pressed=(w_param == WM_XBUTTONDOWN), tick=data.time,
                         snapshot=snapshot,
@@ -332,8 +358,19 @@ class HookThread(threading.Thread):
             return _user32.CallNextHookEx(None, n_code, w_param, l_param)
         vk = int(data.vkCode)
         snapshot = self._snapshot
-        if vk == CODE_ESC or vk in snapshot.bound or (
-            self._edges is not None and self._edges.tracks(vk)
+        # The chord modifier read happens only for a chord-final key going
+        # down — every other keystroke on the system skips the extra reads.
+        chord_ready = (
+            vk in snapshot.chords
+            and w_param in (WM_KEYDOWN, WM_SYSKEYDOWN)
+            and _chord_modifiers_ready()
+        )
+        if (
+            vk == CODE_ESC
+            or vk in snapshot.bound
+            or snapshot.capture
+            or chord_ready
+            or (self._edges is not None and self._edges.tracks(vk))
         ):
             if w_param in (WM_KEYDOWN, WM_SYSKEYDOWN):
                 pressed = True
@@ -343,21 +380,22 @@ class HookThread(threading.Thread):
                 return _user32.CallNextHookEx(None, n_code, w_param, l_param)
             return self._decide(
                 vk, pressed=pressed, tick=data.time,
-                snapshot=snapshot,
+                snapshot=snapshot, chord_ready=chord_ready,
                 n_code=n_code, w_param=w_param, l_param=l_param,
             )
         return _user32.CallNextHookEx(None, n_code, w_param, l_param)
 
     def _decide(
         self, code: int, *, pressed: bool, tick: int, snapshot: HookSnapshot,
-        n_code: int, w_param: int, l_param: int,
+        n_code: int, w_param: int, l_param: int, chord_ready: bool = False,
     ) -> int:
         # The snapshot travels from the gate rather than being re-read: one
         # edge, one snapshot — re-reading here could judge the gate and the
         # decision by two different worlds (review round 1).
         assert self._edges is not None
         decision = self._edges.on_edge(
-            code, pressed=pressed, now_ms=tick, snapshot=snapshot
+            code, pressed=pressed, now_ms=tick, snapshot=snapshot,
+            chord_ready=chord_ready,
         )
         if decision.event is not None:
             self._on_event(HookEvent(kind=decision.event, code=code, tick_ms=tick))

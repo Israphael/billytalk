@@ -60,6 +60,9 @@ class UiController:
         self.send: Callable[[dict[str, Any]], None] | None = None
         self.open_settings: Callable[[], None] | None = None
         self.open_history: Callable[[], None] | None = None
+        self.on_hotkey_captured: Callable[[dict[str, Any]], None] | None = None
+        """The capture dialog parks itself here while it is open —
+        ``hotkey_captured`` is a push, not a reply, so it needs its own seat."""
         self._enabled = True
         self._next_request = 1
         self._pending: dict[int, Callable[[dict[str, Any]], None]] = {}
@@ -95,6 +98,9 @@ class UiController:
             callback = self._pending.pop(message.get("id"), None)
             if callback is not None:
                 callback(message)
+        elif kind == "hotkey_captured":
+            if self.on_hotkey_captured is not None:
+                self.on_hotkey_captured(message)
 
     def _on_state(self, state: object) -> None:
         look = _LOOK_FOR.get(state)

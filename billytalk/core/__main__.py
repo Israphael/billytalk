@@ -31,11 +31,13 @@ from .insert.focus import capture_target
 from .insert.inserter import Inserter
 from .insert.verify import InsertVerifier
 from .ipc.server import IpcServer, PipeBusy, pipe_name
+from .hotkeys import CHORD_COPY_VK, CHORD_PASTE_VK, HotkeyActions, HotkeyCapture
 from .logging_setup import configure_logging
 from .machine.driver import Driver, DriverDeps
 from .machine.effects import ErrorCode
 from .machine.events import Exit, HookDied
 from .services import UiServices
+from .store.config import save_config
 from .stt.groq import GroqProvider
 from .store import CleanupGate, HistoryStore, connect, ensure_schema, load_config
 from .store import secrets
@@ -136,8 +138,39 @@ def main() -> int:
         audio_cap_rows=config.audio_cap_rows,
         audio_cap_bytes=config.audio_cap_bytes,
         bound_codes=frozenset({config.ptt_code}),
+        chord_codes=frozenset({CHORD_PASTE_VK, CHORD_COPY_VK}),
     )
     driver = Driver(deps)
+
+    # -- hotkeys (spec §9, §14): capture + Ctrl+Alt+Z/X, driver-thread jobs -- #
+    def apply_ptt_binding(code: int) -> None:
+        # Driver thread, inside the capture job: live for the hook the moment
+        # end_capture re-syncs the snapshot (мастер шага 3: назначается само).
+        config.ptt_code = code
+        save_config(roaming / "config.json", config)
+        deps.bound_codes = frozenset({code})
+
+    hotkey_capture = HotkeyCapture(
+        post_job=driver.post_job,
+        schedule_at=driver.scheduler.at,
+        now_ms=deps.now_ms,
+        begin_capture=lambda: driver.set_capture_mode(True),
+        end_capture=lambda: driver.set_capture_mode(False),
+        apply_binding=apply_ptt_binding,
+        send=lambda frame: server.send(frame),
+    )
+    hotkey_actions = HotkeyActions(
+        post_job=driver.post_job,
+        last_shown=store.last_shown,
+        capture_target=capture_target,
+        clipboard_write=clipboard.write,
+        insert=inserter.insert,
+        play_cue=play_cue,
+        now_ms=deps.now_ms,
+        wall_ms=deps.wall_ms,
+    )
+    deps.on_chord = hotkey_actions.on_chord
+    deps.on_capture = hotkey_capture.on_capture_event
 
     # -- IPC: the channel the interface speaks over, and the single-instance
     #    gate. FILE_FLAG_FIRST_PIPE_INSTANCE makes start() fail if the name is
@@ -186,6 +219,7 @@ def main() -> int:
         current_dictionary=lambda: deps.dictionary,
         apply_config_to_deps=apply_config_to_deps,
         has_groq_key=has_groq_key,
+        hotkey_capture=hotkey_capture,
     )
     router = UiMessageRouter(
         post=driver.post,
@@ -203,12 +237,16 @@ def main() -> int:
             offline=gate.offline, queue_len=len(st.queue),
         ))
 
+    def on_ui_disconnect() -> None:
+        bridge.clear()
+        # Spec §14: «режим захвата хоткея... снимается при разрыве канала» —
+        # a dead interface must never leave keys suppressed.
+        hotkey_capture.cancel_on_disconnect()
+
     server = IpcServer(
         channel_name, handler=router.handle,
         on_connect=on_ui_connect,
-        # bridge.clear is also where hotkey capture releases in milestone M3
-        # (spec §14: подавление снимается при разрыве канала).
-        on_disconnect=bridge.clear,
+        on_disconnect=on_ui_disconnect,
     )
     try:
         server.start()

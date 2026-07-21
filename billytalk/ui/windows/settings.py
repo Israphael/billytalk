@@ -156,8 +156,11 @@ class SettingsFrame(wx.Frame):
             line.Add(wx.StaticText(page, label=label), 1, wx.ALIGN_CENTER_VERTICAL)
             line.Add(key, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 12)
             change = wx.Button(page, label="Изменить")
-            change.Disable()
-            change.SetToolTip("Захват сочетания появится в этой вехе (M3)")
+            if dynamic is self._ptt_label:
+                change.Bind(wx.EVT_BUTTON, self._on_capture_ptt)
+            else:
+                change.Disable()
+                change.SetToolTip("Фиксированное сочетание в MVP-0")
             line.Add(change, 0)
             sizer.Add(line, 0, wx.EXPAND | wx.ALL, 8)
         note = wx.StaticText(
@@ -248,6 +251,14 @@ class SettingsFrame(wx.Frame):
 
     def _on_section(self, _event: wx.CommandEvent) -> None:
         self._book.SetSelection(max(0, self._nav.GetSelection()))
+
+    def _on_capture_ptt(self, _event: wx.CommandEvent) -> None:
+        from .hotkey_capture import HotkeyCaptureDialog
+
+        dialog = HotkeyCaptureDialog(self._c, self)
+        dialog.ShowModal()
+        dialog.Destroy()
+        self.refresh()  # the core applied the binding; show its word
 
     def _on_language(self, _event: wx.CommandEvent) -> None:
         index = self._language.GetSelection()

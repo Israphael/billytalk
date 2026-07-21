@@ -199,3 +199,41 @@ def test_history_insert_sends_the_row_id_and_reports_the_outcome(wx_app) -> None
         assert "Ctrl+V" in frame._footer.GetLabel()
     finally:
         frame.Destroy()
+
+
+def test_hotkey_capture_dialog_asks_the_core_and_closes_on_the_push(wx_app) -> None:
+    import wx
+
+    from billytalk.ui.windows.hotkey_capture import HotkeyCaptureDialog
+
+    fake = FakeController({})
+    dialog = HotkeyCaptureDialog(fake)  # type: ignore[arg-type]
+    try:
+        first = fake.sent[0]
+        assert first["type"] == "capture_hotkey_start" and first["action"] == "ptt"
+        assert fake.on_hotkey_captured is not None, "the dialog must take the push seat"
+        fake.on_hotkey_captured(
+            {"type": "hotkey_captured", "codes": [4100], "display": "Mouse 5"}
+        )
+        assert dialog.captured is not None and dialog.captured["codes"] == [4100]
+        assert dialog.GetReturnCode() == wx.ID_OK
+        assert fake.on_hotkey_captured is None, "the push seat is left clean"
+    finally:
+        dialog.Destroy()
+
+
+def test_hotkey_capture_dialog_cancel_sends_the_stop_verb(wx_app) -> None:
+    import wx
+
+    from billytalk.ui.windows.hotkey_capture import HotkeyCaptureDialog
+
+    fake = FakeController({})
+    dialog = HotkeyCaptureDialog(fake)  # type: ignore[arg-type]
+    try:
+        dialog._cancel()
+        assert [m["type"] for m in fake.sent] == [
+            "capture_hotkey_start", "capture_hotkey_stop",
+        ]
+        assert dialog.GetReturnCode() == wx.ID_CANCEL
+    finally:
+        dialog.Destroy()
