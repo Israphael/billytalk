@@ -269,13 +269,20 @@ class HotkeyActions:
                 return
         self._pending_confirm = None
         prepared = prepare_text(text, rule)
-        snapshot = self._clipboard_write(prepared)
-        # No clipboard restore afterwards (OPEN-QUESTIONS §27): the user asked
-        # for this text; the clipboard copy is the safety net staying armed.
-        if target is None:
-            self._play_cue(Cue.CLIPBOARD)
+        # clipboard.write can raise (the board owned by another app, the
+        # sequence guard tripping). The driver would log-and-swallow it, but a
+        # chord the user pressed must never fail silently (spec §11): sound the
+        # error cue. No clipboard restore on success (OPEN-QUESTIONS §27).
+        try:
+            snapshot = self._clipboard_write(prepared)
+            if target is None:
+                self._play_cue(Cue.CLIPBOARD)
+                return
+            report = self._insert(target, snapshot, prepared)
+        except Exception:
+            log.exception("chord paste failed")  # no transcript in the trace
+            self._play_cue(Cue.ERROR)
             return
-        report = self._insert(target, snapshot, prepared)
         if not report.ok:
             self._play_cue(Cue.CLIPBOARD)
 
@@ -284,7 +291,12 @@ class HotkeyActions:
         if found is None:
             return
         _row, text = found
-        self._clipboard_write(text)
+        try:
+            self._clipboard_write(text)
+        except Exception:
+            log.exception("chord copy failed")
+            self._play_cue(Cue.ERROR)
+            return
         self._play_cue(Cue.CLIPBOARD)
 
     def _confirmed(self, row_id: int) -> bool:

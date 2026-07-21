@@ -82,7 +82,12 @@ class SettingsFrame(wx.Frame):
 
     def _on_rules(self, frame: dict[str, Any]) -> None:
         if "error" in frame:
-            self.SetStatusText("Словарь не сохранился")
+            # A rejected dictionary_set left self._rules holding the bad edit
+            # (optimistically applied). Re-pull the core's truth, or that one
+            # poisoned rule rides along in every later save and every save
+            # fails until the window is reopened (M2 review, medium finding).
+            self.SetStatusText("Правило отклонено — список восстановлен")
+            self._c.request({"type": "dictionary_get"}, self._on_rules)
             return
         result = frame["result"]
         if "rules" in result:
@@ -360,9 +365,24 @@ class RuleDialog(wx.Dialog):
 
         sizer = wx.BoxSizer(wx.VERTICAL)
         sizer.Add(grid, 1, wx.EXPAND | wx.ALL, 12)
-        sizer.Add(self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL), 0,
-                  wx.EXPAND | wx.ALL, 8)
+        buttons = self.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL)
+        sizer.Add(buttons, 0, wx.EXPAND | wx.ALL, 8)
         self.SetSizerAndFit(sizer)
+        # Guard OK: an empty «Слышится» would be rejected by the core and, since
+        # the list is applied optimistically, would jam every later save until
+        # the window reopened (M2 review). Refuse it at the source instead.
+        ok = self.FindWindow(wx.ID_OK)
+        if ok is not None:
+            ok.Bind(wx.EVT_BUTTON, self._on_ok)
+
+    def _on_ok(self, event: wx.CommandEvent) -> None:
+        if not self._pat.GetValue().strip() or not self._repl.GetValue().strip():
+            wx.MessageBox(
+                "Заполните «Слышится» и «Пишется».", "Правило словаря",
+                wx.OK | wx.ICON_WARNING, self,
+            )
+            return
+        event.Skip()  # let the standard OK close the dialog
 
     def rule(self) -> dict[str, Any]:
         index = max(0, self._type.GetSelection())

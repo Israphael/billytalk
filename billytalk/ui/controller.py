@@ -15,6 +15,7 @@ crosses the channel as plain dicts, the windows come as injected openers.
 from __future__ import annotations
 
 import logging
+import secrets
 from collections.abc import Callable
 from typing import Any
 
@@ -24,6 +25,27 @@ from .overlay import Plashka, PlashkaLook
 log = logging.getLogger("billytalk.ui.controller")
 
 __all__ = ["UiController"]
+
+
+def _target_alive(callback: Callable[..., Any]) -> bool:
+    """False when a reply callback is a bound method of a wx window the user
+    already closed. wxPython makes a destroyed window falsy, so touching its
+    controls from a late reply would raise «wrapped C/C++ object deleted».
+
+    The falsy check is scoped to ``wx.Window`` on purpose — a bound method of
+    an ordinary object (an empty list, say) is falsy for reasons that have
+    nothing to do with being deleted. A plain function, a lambda, or a
+    non-window owner is always live."""
+    owner = getattr(callback, "__self__", None)
+    if owner is None:
+        return True
+    try:
+        import wx
+    except ImportError:
+        return True
+    if isinstance(owner, wx.Window):
+        return bool(owner)
+    return True
 
 # The plashka look each display state calls for; anything else hides it. The
 # keys are the TrayState values the core sends in state_changed.
@@ -64,7 +86,12 @@ class UiController:
         """The capture dialog parks itself here while it is open —
         ``hotkey_captured`` is a push, not a reply, so it needs its own seat."""
         self._enabled = True
-        self._next_request = 1
+        # A random base, not 1: if the core restarts a UI mid-flight, a
+        # driver-thread job posted by the OLD interface answers over the new
+        # connection with its old request id. Colliding on a small counter both
+        # started at 1 would feed the new window a stranger's payload; 31 random
+        # bits make that practically impossible (OPEN-QUESTIONS §31).
+        self._next_request = secrets.randbits(31) + 1
         self._pending: dict[int, Callable[[dict[str, Any]], None]] = {}
 
     def push_menu(self) -> None:
@@ -96,7 +123,7 @@ class UiController:
             self._on_menu_command(message.get("command"))
         elif kind == "reply":
             callback = self._pending.pop(message.get("id"), None)
-            if callback is not None:
+            if callback is not None and _target_alive(callback):
                 callback(message)
         elif kind == "hotkey_captured":
             if self.on_hotkey_captured is not None:

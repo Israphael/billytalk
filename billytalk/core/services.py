@@ -317,17 +317,28 @@ class UiServices:
                 getattr(target, "window_class", None),
             )
             prepared = prepare_text(text, rule)
-            snapshot = self._clipboard_write(prepared)
-            # The user's clipboard is NOT restored afterwards: they asked for
-            # this text — leaving it in the clipboard is the history window's
-            # safety-net behaving like one (OPEN-QUESTIONS §27).
-            if target is None:
-                # No dictation this run, nothing to aim at: the text is in the
-                # clipboard, say so audibly — never silence (spec §8).
+            # clipboard.write really raises — the OpenClipboard retries run out
+            # when another app owns the board, or the sequence guard trips. An
+            # unanswered request leaves the history window's «Вставить» button
+            # dead: spec §8 forbids silence, so any failure past here answers
+            # with an error the window turns into «текст можно скопировать».
+            try:
+                snapshot = self._clipboard_write(prepared)
+                # The user's clipboard is NOT restored afterwards: they asked
+                # for this text — leaving it there is the safety net behaving
+                # like one (OPEN-QUESTIONS §27).
+                if target is None:
+                    # Nothing to aim at: the text is in the clipboard, said
+                    # aloud, never silence (spec §8).
+                    self._play_cue(Cue.CLIPBOARD)
+                    self._send_reply(rid, result={"status": "left_on_clipboard"})
+                    return
+                report = self._insert(target, snapshot, prepared)
+            except Exception:
+                log.exception("history insert failed")  # no transcript in the trace
                 self._play_cue(Cue.CLIPBOARD)
-                self._send_reply(rid, result={"status": "left_on_clipboard"})
+                self._send_reply(rid, error="insert_failed")
                 return
-            report = self._insert(target, snapshot, prepared)
             if report.ok:
                 self._send_reply(rid, result={"status": report.status.value})
                 return
@@ -422,6 +433,15 @@ def _validated_export_path(format_: object, path_wire: object) -> Path | None:
     try:
         path = Path(path_wire)
         if not path.is_absolute():
+            return None
+        # A local lettered drive only. A UNC path ("\\\\host\\share\\x.json")
+        # is absolute and passes the suffix check, and parent.is_dir() would
+        # then make a blocking SMB call — writing the whole (perpetual) history
+        # to an attacker's share AND leaking an NTLM handshake, the exact
+        # arbitrary-write primitive spec §14 demands the core refuse. Path.drive
+        # is "C:" for a local path, "\\\\host\\share" for UNC, "" for driveless.
+        drive = path.drive
+        if len(drive) != 2 or drive[1] != ":":
             return None
         if path.suffix.lower().lstrip(".") != format_:
             return None

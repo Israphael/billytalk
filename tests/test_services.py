@@ -355,3 +355,36 @@ def test_capture_verbs_delegate_to_the_hotkey_capture(world: World) -> None:
 def test_capture_verbs_without_a_capture_service_answer_unimplemented(world: World) -> None:
     frame = world.services.handle("capture_hotkey_start", {"id": 32, "action": "ptt"})
     assert frame == {"type": "reply", "id": 32, "error": "unimplemented"}
+
+
+# --------------------------------------------------------------------------- #
+# M2 review fixes
+# --------------------------------------------------------------------------- #
+
+
+def test_history_export_refuses_unc_paths(world: World) -> None:
+    """M2 review, medium: a UNC path is absolute and would make the core write
+    the whole (perpetual) transcript history to a remote share and leak an
+    NTLM handshake — spec §14's arbitrary-write primitive."""
+    frame = world.services.handle("history_export", {
+        "id": 40, "format": "json", "path": r"\attacker\share\hist.json",
+    })
+    assert frame == {"type": "reply", "id": 40, "error": "bad_path"}
+    frame = world.services.handle("history_export", {
+        "id": 41, "format": "json", "path": r"\127.0.0.1\C$\Users\Public\h.json",
+    })
+    assert frame == {"type": "reply", "id": 41, "error": "bad_path"}
+
+
+def test_history_insert_reports_a_clipboard_failure_never_silence(world: World) -> None:
+    """M2 review, medium: clipboard.write really raises; without a reply the
+    «Вставить» button dies silently, which spec §8 forbids."""
+    world.add_row(text="важный текст")
+
+    def boom(_text: str) -> Any:
+        raise RuntimeError("clipboard owned by another app")
+
+    world.services._clipboard_write = boom  # type: ignore[assignment]
+    world.services.handle("history_insert", {"id": 42, "row_id": 1})
+    assert world.sent[-1] == {"type": "reply", "id": 42, "error": "insert_failed"}
+    assert world.cues == [Cue.CLIPBOARD], "a failure is always audible"

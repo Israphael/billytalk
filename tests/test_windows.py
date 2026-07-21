@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+import wx
 
 from billytalk.ui.windows.history import (
     insert_outcome_line,
@@ -237,3 +238,35 @@ def test_hotkey_capture_dialog_cancel_sends_the_stop_verb(wx_app) -> None:
         assert dialog.GetReturnCode() == wx.ID_CANCEL
     finally:
         dialog.Destroy()
+
+
+class _ReplyFrame(wx.Frame):
+    def __init__(self, sink: list[Any]) -> None:
+        super().__init__(None)
+        self._sink = sink
+
+    def on_reply(self, message: Any) -> None:
+        self._sink.append(message)  # must not run once the frame is destroyed
+
+
+def test_reply_to_a_destroyed_window_is_dropped(wx_app) -> None:
+    """M2 review, medium: a reply arriving after the user closed the window
+    must not touch its dead controls («wrapped C/C++ object deleted»)."""
+    import wx
+
+    from billytalk.ui.controller import UiController
+
+    ctl = UiController(_FakePlashka())  # type: ignore[arg-type]
+    ctl.send = lambda m: None
+    hits: list[Any] = []
+    frame = _ReplyFrame(hits)
+    ctl._pending[123] = frame.on_reply  # a genuine bound method of the frame
+    frame.Destroy()
+    wx.Yield()  # let the destroy settle so the frame goes falsy
+    ctl.dispatch({"type": "reply", "id": 123, "result": {}})
+    assert hits == [], "a reply for a destroyed frame must be dropped"
+
+
+class _FakePlashka:
+    def show(self, look: Any) -> None: ...
+    def hide(self) -> None: ...

@@ -189,3 +189,29 @@ def test_ui_fills_the_tray_menu_over_ipc(tmp_path: Path) -> None:
             proc.kill()
             proc.wait(5)
         server.stop()
+
+
+# --------------------------------------------------------------------------- #
+# M2 review fixes: request/reply correlation robustness
+# --------------------------------------------------------------------------- #
+
+
+def test_reply_to_a_live_non_window_callback_still_lands() -> None:
+    from billytalk.ui.controller import UiController
+
+    ctl = UiController(_FakePlashka())
+    ctl.send = lambda m: None
+    seen: list[dict[str, Any]] = []
+    ctl.request({"type": "get_config"}, seen.append)
+    rid = next(iter(ctl._pending))
+    ctl.dispatch({"type": "reply", "id": rid, "result": {"ok": True}})
+    assert seen == [{"type": "reply", "id": rid, "result": {"ok": True}}]
+
+
+def test_request_ids_do_not_start_at_a_fixed_one() -> None:
+    from billytalk.ui.controller import UiController
+
+    a = UiController(_FakePlashka())
+    b = UiController(_FakePlashka())
+    # Two interfaces almost never share an id base (OPEN-QUESTIONS §31).
+    assert a._next_request != 1 or b._next_request != 1
