@@ -203,9 +203,21 @@ class UiServices:
             if validator is None or not validator(value):
                 log.warning("set_config rejected key %r", key)  # key only, no value
                 return reply(rid, error="bad_patch") if rid is not None else None
+        # Atomic against a failed write: mutate live state only if it stuck —
+        # otherwise memory holds the new values while disk keeps the old, and
+        # since save_config serialises the WHOLE Config the rejected patch would
+        # ride the next successful save (silent late commit). Mirror
+        # apply_ptt_binding: snapshot, restore on failure, re-raise so _dispatch
+        # still answers internal_error but every copy stays consistent.
+        previous = {key: getattr(self._config, key) for key in patch}
         for key, value in patch.items():
             setattr(self._config, key, value)
-        save_config(self._config_path, self._config)
+        try:
+            save_config(self._config_path, self._config)
+        except Exception:
+            for key, value in previous.items():
+                setattr(self._config, key, value)
+            raise
         # The deps copies (language, fuses) refresh on the driver thread; the
         # config object itself is already live for every closure that reads it.
         self._post_job(self._apply_config_to_deps)

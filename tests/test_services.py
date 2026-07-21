@@ -151,6 +151,26 @@ def test_set_config_rejects_bad_patches(world: World, patch: object) -> None:
     assert world.config.language == "ru", "a rejected patch changes nothing"
 
 
+def test_set_config_save_failure_rolls_the_config_back(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ultrareview, normal: _set_config mutated self._config BEFORE the save, so
+    a raising save_config (OneDrive/AV lock on %APPDATA%, full disk) left memory
+    holding the new value while disk kept the old — and since save_config writes
+    the whole Config, the rejected patch would ride the next successful save. The
+    save now runs under a snapshot/rollback so the raise leaves every copy old."""
+    import billytalk.core.services as services_mod
+
+    def boom(_path: Path, _config: Config) -> None:
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(services_mod, "save_config", boom)
+    with pytest.raises(OSError):
+        world.services.handle("set_config", {"id": 34, "patch": {"language": "en"}})
+    assert world.config.language == "ru", "the failed save left the config untouched"
+    assert world.deps_applied == 0, "apply_config_to_deps never ran"
+
+
 def test_set_config_does_not_patch_the_groq_model(world: World) -> None:
     """cue-review, low: GroqProvider binds its model at construction and
     apply_config_to_deps does not refresh it, so accepting the patch would
