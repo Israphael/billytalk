@@ -25,14 +25,20 @@ import win32security
 import winerror
 
 from billytalk.core.ipc.protocol import (
+    CORE_TO_UI,
     MAX_FRAME_BYTES,
     PROTOCOL_VERSION,
+    UI_TO_CORE,
     FrameCorrupt,
     FrameDecoder,
     FrameTooLarge,
     encode_frame,
     hello,
+    menu_command,
+    menu_model,
     reply,
+    shutdown,
+    toggle_dictation,
 )
 from billytalk.core.ipc.server import IpcServer, PipeBusy, pipe_name
 from billytalk.ui.ipc.client import (
@@ -184,6 +190,16 @@ def test_encode_refuses_a_frame_over_the_cap() -> None:
 def test_pipe_name_carries_sid_and_session() -> None:
     name = pipe_name()
     assert re.fullmatch(r"\\\\\.\\pipe\\billytalk-S-1-[\d-]+-\d+", name), name
+
+
+def test_milestone2_message_builders_and_directions() -> None:
+    assert menu_model([{"command": 1}]) == {"type": "menu_model", "items": [{"command": 1}]}
+    assert menu_command(5) == {"type": "menu_command", "command": 5}
+    assert toggle_dictation(True) == {"type": "toggle_dictation", "enabled": True}
+    assert shutdown() == {"type": "shutdown"}
+    # The menu flows UI→core; the click that answers it flows core→UI.
+    assert "menu_model" in UI_TO_CORE and "menu_model" not in CORE_TO_UI
+    assert "menu_command" in CORE_TO_UI and "menu_command" not in UI_TO_CORE
 
 
 # --------------------------------------------------------------------------- #
@@ -557,19 +573,25 @@ def test_writer_timeout_severs_a_wedged_connection() -> None:
     must be level-triggered so the parked reader dies with it — previously
     the connection survived as a zombie (connected=True, nobody writing)."""
     name = _test_name()
+    connected = threading.Event()
     disconnected = threading.Event()
     server = IpcServer(
         name, handler=_echo_handler,
-        on_disconnect=disconnected.set, write_timeout_ms=300,
+        on_connect=connected.set, on_disconnect=disconnected.set, write_timeout_ms=300,
     )
     server.start()
     try:
         wedged = _connect_raw(name)
         try:
             _handshake_raw(wedged)
-            # Enough to overrun the 64 KiB pipe buffer so the writer pends,
-            # then times out at 300 ms. The client handle stays OPEN — the
-            # disconnect must come from our side, not from the peer dying.
+            # The server flips connected just after the ack the raw handshake
+            # read; sending before that flips drops frames (send() returns
+            # False), and too few frames never overrun the buffer, so the writer
+            # never pends and never times out (flake). Wait for the flag first.
+            assert connected.wait(DEADLINE_S), "server never registered the client"
+            # Enough to overrun the 64 KiB pipe buffer so the writer pends, then
+            # times out at 300 ms. The client handle stays OPEN — the disconnect
+            # must come from our side, not from the peer dying.
             for _ in range(30):
                 server.send({"type": "state_changed", "pad": "x" * 8_000})
             assert disconnected.wait(5.0), "writer death left a zombie connection"

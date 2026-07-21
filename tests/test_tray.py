@@ -30,6 +30,7 @@ from billytalk.core.tray import (
     _TOOLTIPS,
     _build_menu,
     _draw_state_icon,
+    menu_items_from_wire,
     tray_state_for,
     tray_tooltip_for,
 )
@@ -144,6 +145,23 @@ def test_an_icon_is_drawn_for_every_state_in_both_themes() -> None:
             handle = _draw_state_icon(state, light_taskbar=light)
             assert handle, f"no icon for {state} light={light}"
             _user32.DestroyIcon(handle)
+
+
+def test_menu_items_from_wire_builds_items_and_skips_junk() -> None:
+    """The UI's menu crosses the channel as plain dicts (OQ §22); malformed
+    entries are dropped, not trusted."""
+    items = menu_items_from_wire([
+        {"command": 202, "label": "Диктовка включена", "checked": True},
+        {"command": 0, "label": ""},          # a separator
+        "garbage",                            # not a dict — skipped
+        {"command": 209, "label": "Выход"},
+    ])
+    assert len(items) == 3
+    assert items[0] == TrayMenuItem(202, "Диктовка включена", checked=True)
+    assert items[1].is_separator
+    assert items[2] == TrayMenuItem(209, "Выход")
+    assert menu_items_from_wire("not a list") == ()
+    assert menu_items_from_wire([]) == ()
 
 
 def test_menu_is_built_from_the_model() -> None:

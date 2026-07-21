@@ -110,3 +110,82 @@ def test_ui_host_launches_once_while_alive_and_throttles_relaunch() -> None:
     clock["t"] += 25  # 35 s since the launch
     host.ensure_running()
     assert len(launched) == 2, "past the budget, a dead interface relaunches"
+
+
+# --------------------------------------------------------------------------- #
+# UiController: the menu it fills and the clicks it routes (OQ §22)
+# --------------------------------------------------------------------------- #
+
+class _FakePlashka:
+    def __init__(self) -> None:
+        self.shown: list[Any] = []
+        self.hidden = 0
+
+    def show(self, look: Any) -> None:
+        self.shown.append(look)
+
+    def hide(self) -> None:
+        self.hidden += 1
+
+
+def test_controller_fills_the_menu_and_keeps_the_toggle_honest() -> None:
+    from billytalk.ui.__main__ import UiController, _CMD_TOGGLE
+
+    sent: list[dict[str, Any]] = []
+    ctl = UiController(_FakePlashka())
+    ctl.send = sent.append
+    ctl.push_menu()
+    assert sent[-1]["type"] == "menu_model"
+    toggle = next(i for i in sent[-1]["items"] if i["command"] == _CMD_TOGGLE)
+    assert toggle["checked"] is True  # dictation assumed on until told otherwise
+    ctl.dispatch({"type": "state_changed", "state": "stopped"})
+    toggle = next(i for i in sent[-1]["items"] if i["command"] == _CMD_TOGGLE)
+    assert toggle["checked"] is False, "the toggle must follow the stopped state"
+
+
+def test_controller_routes_menu_clicks_back_to_the_core() -> None:
+    from billytalk.ui.__main__ import UiController, _CMD_EXIT, _CMD_TOGGLE
+
+    sent: list[dict[str, Any]] = []
+    ctl = UiController(_FakePlashka())
+    ctl.send = sent.append
+    ctl.dispatch({"type": "menu_command", "command": _CMD_EXIT})
+    assert sent[-1] == {"type": "shutdown"}
+    ctl.dispatch({"type": "menu_command", "command": _CMD_TOGGLE})
+    assert sent[-1] == {"type": "toggle_dictation", "enabled": False}  # was on → off
+
+
+def test_controller_state_drives_the_plashka() -> None:
+    from billytalk.ui.__main__ import UiController
+    from billytalk.ui.overlay import PlashkaLook
+
+    fake = _FakePlashka()
+    ctl = UiController(fake)
+    ctl.send = lambda m: None
+    ctl.dispatch({"type": "state_changed", "state": "transcribing"})
+    assert fake.shown[-1] is PlashkaLook.TRANSCRIBING
+    ctl.dispatch({"type": "state_changed", "state": "idle"})
+    assert fake.hidden == 1
+
+
+def test_ui_fills_the_tray_menu_over_ipc(tmp_path: Path) -> None:
+    """End to end: the launched interface sends its menu model to the core on
+    connect (OPEN-QUESTIONS §22)."""
+    name = _test_name()
+    got_menu = threading.Event()
+
+    def handler(message: dict[str, Any]) -> dict[str, Any] | None:
+        if message.get("type") == "menu_model":
+            got_menu.set()
+        return _echo_handler(message)
+
+    server = IpcServer(name, handler=handler)
+    server.start()
+    proc = _spawn_ui(name, tmp_path)
+    try:
+        assert got_menu.wait(DEADLINE_S), "the interface never sent its menu model"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(5)
+        server.stop()

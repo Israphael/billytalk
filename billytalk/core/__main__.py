@@ -29,7 +29,7 @@ from .hooks.watchdog import HookWatchdog
 from .insert.clipboard import Clipboard
 from .insert.focus import capture_target
 from .insert.inserter import Inserter
-from .ipc.protocol import state_changed
+from .ipc.protocol import menu_command, state_changed
 from .ipc.server import IpcServer, PipeBusy, pipe_name
 from .logging_setup import configure_logging
 from .machine.driver import Driver, DriverDeps
@@ -44,6 +44,7 @@ from .tray import (
     TrayIcon,
     TrayMenuItem,
     TrayState,
+    menu_items_from_wire,
     tray_state_for,
     tray_tooltip_for,
 )
@@ -152,6 +153,11 @@ def main() -> int:
     #    hooks (harness §2, §3; acceptance «второй экземпляр ядра не запускается»).
     channel_name = pipe_name()
 
+    # The interface fills the tray menu over IPC (OPEN-QUESTIONS §22); this holds
+    # the model it sent, or None to fall back to the core's own minimum. Written
+    # on the server read thread, read on the window thread — a lone atomic ref.
+    ui_menu: list[tuple[TrayMenuItem, ...] | None] = [None]
+
     def ipc_handler(message):
         """UI → core. Fire-and-forget for milestone 2; the config/history/hotkey
         verbs are milestone 3. Runs on the server's read thread — it only posts
@@ -164,9 +170,17 @@ def main() -> int:
             driver.post(SetDictationEnabled(bool(enabled)))
         elif kind == "shutdown":
             driver.post(Exit())
+        elif kind == "menu_model":
+            items = menu_items_from_wire(message.get("items"))
+            ui_menu[0] = items or None
         return None
 
-    server = IpcServer(channel_name, handler=ipc_handler)
+    def on_ui_disconnect():
+        # A dead interface falls back to the core's own menu (OQ §22). This is
+        # also where hotkey capture releases in milestone 3 (spec §14).
+        ui_menu[0] = None
+
+    server = IpcServer(channel_name, handler=ipc_handler, on_disconnect=on_ui_disconnect)
     try:
         server.start()
     except PipeBusy:
@@ -218,19 +232,27 @@ def main() -> int:
     CMD_TOGGLE, CMD_EXIT = 102, 109
 
     def menu_model() -> tuple[TrayMenuItem, ...]:
-        # Window thread; driver.state is a frozen record rebound atomically.
-        # Opening the menu is a demand that raises the interface too (§25); its
-        # own model arrives over IPC in the next step, with this as the fallback.
+        # Window thread. Opening the menu is a demand that raises the interface
+        # too (§25); once it has sent its model, that is what we show.
         ui_host.ensure_running()
+        ui = ui_menu[0]
+        if ui is not None:
+            return ui
+        # Dead-interface minimum (OQ §22): enough to toggle and quit. driver.state
+        # is a frozen record rebound atomically, safe to read from this thread.
         return (
-            TrayMenuItem(101, "Открыть настройки", enabled=False),  # UI: далее в цикле 2
-            TrayMenuItem(),
             TrayMenuItem(CMD_TOGGLE, "Диктовка включена", checked=driver.state.enabled),
             TrayMenuItem(),
             TrayMenuItem(CMD_EXIT, "Выход"),
         )
 
     def on_tray_command(command: int) -> None:
+        # When the interface owns the menu it owns the click: forward it and let
+        # the UI decide (it answers with toggle_dictation / shutdown / opening a
+        # window). Only the dead-interface fallback is handled here directly.
+        if ui_menu[0] is not None:
+            server.send(menu_command(command))
+            return
         if command == CMD_TOGGLE:
             driver.post(SetDictationEnabled(not driver.state.enabled))
         elif command == CMD_EXIT:

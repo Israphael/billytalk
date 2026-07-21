@@ -43,6 +43,10 @@ __all__ = [
     "protocol_mismatch",
     "reply",
     "state_changed",
+    "toggle_dictation",
+    "shutdown",
+    "menu_model",
+    "menu_command",
 ]
 
 PROTOCOL_VERSION: Final = 1
@@ -59,12 +63,14 @@ UI_TO_CORE: Final = frozenset({
     "dictionary_get", "dictionary_set",
     "capture_hotkey_start", "capture_hotkey_stop",
     "test_key", "toggle_dictation", "shutdown",
+    "menu_model",
 })
 
 CORE_TO_UI: Final = frozenset({
     "hello_ack", "reply", "error",
     "state_changed", "transcription_ready",
     "usage_updated", "device_list_changed", "hotkey_captured",
+    "menu_command",
 })
 
 
@@ -173,3 +179,27 @@ def state_changed(state: str, *, queue_len: int = 0,
     if detail is not None:
         message["detail"] = detail
     return message
+
+
+def toggle_dictation(enabled: bool) -> dict[str, Any]:
+    """UI → core: turn dictation on or off (spec §3)."""
+    return {"type": "toggle_dictation", "enabled": bool(enabled)}
+
+
+def shutdown() -> dict[str, Any]:
+    """UI → core: quit both processes — the tray Exit (spec §3)."""
+    return {"type": "shutdown"}
+
+
+def menu_command(command: int) -> dict[str, Any]:
+    """Core → UI: the user chose tray menu item ``command``; the interface owns
+    what it means (OPEN-QUESTIONS §22)."""
+    return {"type": "menu_command", "command": int(command)}
+
+
+def menu_model(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """UI → core: the tray menu content. Items are plain dicts (``command``,
+    ``label``, ``checked``, ``enabled``, ``default``; command 0 with an empty
+    label is a separator), so the interface never imports the core's ctypes
+    tray module (harness §1)."""
+    return {"type": "menu_model", "items": list(items)}

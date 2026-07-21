@@ -56,6 +56,7 @@ __all__ = [
     "TrayIcon",
     "TrayMenuItem",
     "TrayState",
+    "menu_items_from_wire",
     "tray_state_for",
     "tray_tooltip_for",
 ]
@@ -553,6 +554,29 @@ class TrayMenuItem:
     @property
     def is_separator(self) -> bool:
         return self.command == 0 and not self.label
+
+
+def menu_items_from_wire(items: object) -> tuple[TrayMenuItem, ...]:
+    """Plain wire dicts (the menu the UI fills over IPC, OPEN-QUESTIONS §22) into
+    :class:`TrayMenuItem`\\ s. The UI never imports this ctypes module (harness
+    §1), so the menu crosses the channel as data; anything that is not a dict is
+    skipped rather than trusted."""
+    result: list[TrayMenuItem] = []
+    if not isinstance(items, (list, tuple)):
+        return ()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        result.append(
+            TrayMenuItem(
+                command=int(item.get("command", 0)),
+                label=str(item.get("label", "")),
+                checked=bool(item.get("checked", False)),
+                enabled=bool(item.get("enabled", True)),
+                default=bool(item.get("default", False)),
+            )
+        )
+    return tuple(result)
 
 
 def _build_menu(items: Sequence[TrayMenuItem]) -> int:

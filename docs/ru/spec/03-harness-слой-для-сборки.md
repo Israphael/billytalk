@@ -533,6 +533,7 @@ GIL во время работы хука.
 | `SetForegroundWindow` игнорируется из фона | `AttachThreadInput`, **не с потока хука** |
 | `SetWindowLongW` обрезает 64 бита | `SetWindowLongPtrW` с явными `LONG_PTR` |
 | `frame.Show()` активирует окно | `ShowWindow(SW_SHOWNOACTIVATE)` |
+| `WS_EX_LAYERED` без установленных атрибутов = окно не рисуется вовсе | после `WS_EX_LAYERED` сразу `SetLayeredWindowAttributes`/`UpdateLayeredWindow` (плашка, цикл 2) |
 | `wx.adv.TaskBarIcon` не даёт версию 4 | трей на ctypes |
 | `NIF_GUID` привязан к пути файла | `hWnd` + `uID` |
 | Подсказка трея требует `NIF_SHOWTIP` | под версией 4 обязательно |

@@ -71,3 +71,23 @@ def test_resolve_face_falls_back_when_the_preferred_is_absent(wx_app) -> None:
 
 def test_system_is_dark_returns_a_bool(wx_app) -> None:
     assert isinstance(system_is_dark(), bool)
+
+
+def test_dwm_appliers_run_against_a_real_window(wx_app) -> None:
+    """The DWM ctypes prototypes are as load-bearing as the tray's GDI ones — a
+    wrong argtype silently corrupts the 64-bit pointer. Exercise both setters on
+    a real HWND: they must return a bool (accepted, or cleanly declined on an
+    old build), never raise."""
+    import wx
+
+    from billytalk.ui.chrome import apply_dark_titlebar, apply_mica
+
+    frame = wx.Frame(None)
+    try:
+        hwnd = int(frame.GetHandle())
+        build = windows_build()
+        assert isinstance(apply_dark_titlebar(hwnd, dark=True, build=build), bool)
+        assert isinstance(apply_dark_titlebar(hwnd, dark=False, build=build), bool)
+        assert isinstance(apply_mica(hwnd, build=build), bool)
+    finally:
+        frame.Destroy()
