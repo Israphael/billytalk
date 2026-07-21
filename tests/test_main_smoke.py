@@ -18,3 +18,15 @@ def test_core_main_imports() -> None:
 
 def test_ui_main_imports() -> None:
     importlib.import_module("billytalk.ui.__main__")
+
+
+def test_frozen_entry_imports_and_dispatches() -> None:
+    """The single frozen entry point (cycle 3): importable, and its dispatch
+    routes --ui to the interface and everything else to the core without
+    running either (both main()s are guarded)."""
+    mod = importlib.import_module("billytalk.__main__")
+    assert hasattr(mod, "main")
+    import inspect
+
+    source = inspect.getsource(mod.main)
+    assert "--ui" in source and "ui_main" in source and "core_main" in source

@@ -307,8 +307,13 @@ def main() -> int:
     # (ui/ipc/client). GetModuleFileNameEx, not sys.executable: under a uv venv
     # the trampoline and the real image differ (harness §13).
     core_image = win32process.GetModuleFileNameEx(win32api.GetCurrentProcess(), 0)
-    # cycle 3: the frozen build launches itself with a flag, not `-m`.
-    ui_host = UiHost([sys.executable, "-m", "billytalk.ui", channel_name, core_image])
+    # Frozen (cycle 3): the shipped BillyTalk.exe is both roles; it relaunches
+    # itself with --ui. Dev checkout: the interface is a `-m billytalk.ui` child.
+    if getattr(sys, "frozen", False):
+        ui_argv = [sys.executable, "--ui", channel_name, core_image]
+    else:
+        ui_argv = [sys.executable, "-m", "billytalk.ui", channel_name, core_image]
+    ui_host = UiHost(ui_argv)
 
     waiting = driver.enqueue_startup_pending()
     if waiting:
