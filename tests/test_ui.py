@@ -129,7 +129,7 @@ class _FakePlashka:
 
 
 def test_controller_fills_the_menu_and_keeps_the_toggle_honest() -> None:
-    from billytalk.ui.__main__ import UiController, _CMD_TOGGLE
+    from billytalk.ui.controller import UiController, _CMD_TOGGLE
 
     sent: list[dict[str, Any]] = []
     ctl = UiController(_FakePlashka())
@@ -144,7 +144,7 @@ def test_controller_fills_the_menu_and_keeps_the_toggle_honest() -> None:
 
 
 def test_controller_routes_menu_clicks_back_to_the_core() -> None:
-    from billytalk.ui.__main__ import UiController, _CMD_EXIT, _CMD_TOGGLE
+    from billytalk.ui.controller import UiController, _CMD_EXIT, _CMD_TOGGLE
 
     sent: list[dict[str, Any]] = []
     ctl = UiController(_FakePlashka())
@@ -156,7 +156,7 @@ def test_controller_routes_menu_clicks_back_to_the_core() -> None:
 
 
 def test_controller_state_drives_the_plashka() -> None:
-    from billytalk.ui.__main__ import UiController
+    from billytalk.ui.controller import UiController
     from billytalk.ui.overlay import PlashkaLook
 
     fake = _FakePlashka()

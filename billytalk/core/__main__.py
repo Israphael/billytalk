@@ -29,32 +29,20 @@ from .hooks.watchdog import HookWatchdog
 from .insert.clipboard import Clipboard
 from .insert.focus import capture_target
 from .insert.inserter import Inserter
-from .ipc.protocol import menu_command, state_changed
 from .ipc.server import IpcServer, PipeBusy, pipe_name
 from .logging_setup import configure_logging
 from .machine.driver import Driver, DriverDeps
 from .machine.effects import ErrorCode
-from .machine.events import Exit, HookDied, SetDictationEnabled
+from .machine.events import Exit, HookDied
 from .stt.groq import GroqProvider
 from .store import CleanupGate, HistoryStore, connect, ensure_schema, load_config
 from .store import secrets
 from .text.dictionary import Dictionary
-from .tray import (
-    HiddenWindow,
-    TrayIcon,
-    TrayMenuItem,
-    TrayState,
-    menu_items_from_wire,
-    tray_state_for,
-    tray_tooltip_for,
-)
+from .tray import HiddenWindow, TrayIcon, tray_tooltip_for
 from .ui_launch import UiHost
+from .wiring import TrayMenuBridge, UiMessageRouter, connect_greeting, plan_publish
 
 log = logging.getLogger("billytalk.main")
-
-_ACTIVE_PHASE_NAMES = frozenset({"Initialized", "Recording", "Finalizing", "Delivering"})
-"""Phases where a dictation is in flight — the trigger to have the interface up
-so the plashka can show through Finalizing/Delivering (OPEN-QUESTIONS §25)."""
 
 _ACTION_HINTS: dict[ErrorCode, str] = {
     ErrorCode.MIC_DENIED: "откройте Параметры → Конфиденциальность → Микрофон",
@@ -153,52 +141,37 @@ def main() -> int:
     #    hooks (harness §2, §3; acceptance «второй экземпляр ядра не запускается»).
     channel_name = pipe_name()
 
-    # The interface fills the tray menu over IPC (OPEN-QUESTIONS §22); this holds
-    # the model it sent, or None to fall back to the core's own minimum. Written
-    # on the server read thread, read on the window thread — a lone atomic ref.
-    ui_menu: list[tuple[TrayMenuItem, ...] | None] = [None]
+    # The logic lives in core/wiring.py where tests reach it (milestone-3 M0);
+    # __main__ hands it the real collaborators. ui_host and server are created
+    # a few lines below — the lambdas bind late, and nothing calls them before
+    # both exist.
+    bridge = TrayMenuBridge(
+        ensure_ui=lambda: ui_host.ensure_running(),
+        dictation_enabled=lambda: driver.state.enabled,
+        post=driver.post,
+        send=lambda frame: server.send(frame),
+    )
+    router = UiMessageRouter(
+        post=driver.post,
+        dictation_enabled=lambda: driver.state.enabled,
+        menu=bridge,
+    )
 
-    def ipc_handler(message):
-        """UI → core. Fire-and-forget for milestone 2; the config/history/hotkey
-        verbs are milestone 3. Runs on the server's read thread — it only posts
-        events, the same as the tray does from the window thread."""
-        kind = message.get("type")
-        if kind == "toggle_dictation":
-            enabled = message.get("enabled")
-            if enabled is None:
-                enabled = not driver.state.enabled
-            driver.post(SetDictationEnabled(bool(enabled)))
-        elif kind == "shutdown":
-            driver.post(Exit())
-        elif kind == "menu_model":
-            items = menu_items_from_wire(message.get("items"))
-            ui_menu[0] = items or None
-        return None
-
-    def on_ui_connect():
-        # Push the current display state to a freshly connected interface so its
-        # menu check mark and plashka are right at once — a stopped/idle core
-        # emits no state_changed on its own, so the interface would otherwise
-        # sit on its enabled=True assumption forever (cycle-2 review, finding 2).
+    def on_ui_connect() -> None:
         # Read thread: driver.state is a frozen record and gate.offline a bool,
-        # the same safe cross-thread reads menu_model makes. No store touch —
-        # count_waiting belongs to the driver thread's sqlite connection, so the
-        # offline count is left to the next real publish.
+        # the same safe cross-thread reads the menu bridge makes.
         st = driver.state
-        tstate = tray_state_for(
+        server.send(connect_greeting(
             phase_name=st.phase.name, enabled=st.enabled,
             offline=gate.offline, queue_len=len(st.queue),
-        )
-        server.send(state_changed(tstate.value, queue_len=len(st.queue)))
-
-    def on_ui_disconnect():
-        # A dead interface falls back to the core's own menu (OQ §22). This is
-        # also where hotkey capture releases in milestone 3 (spec §14).
-        ui_menu[0] = None
+        ))
 
     server = IpcServer(
-        channel_name, handler=ipc_handler,
-        on_connect=on_ui_connect, on_disconnect=on_ui_disconnect,
+        channel_name, handler=router.handle,
+        on_connect=on_ui_connect,
+        # bridge.clear is also where hotkey capture releases in milestone M3
+        # (spec §14: подавление снимается при разрыве канала).
+        on_disconnect=bridge.clear,
     )
     try:
         server.start()
@@ -248,50 +221,11 @@ def main() -> int:
     threading.Thread(target=stdin_watcher, name="billytalk-stdin", daemon=True).start()
 
     # -- tray (spec §11; OPEN-QUESTIONS §22: the icon lives in the core) --- #
-    CMD_TOGGLE, CMD_EXIT = 102, 109
-    # Which model the open menu was built from, snapshotted when it is served so
-    # a click routes the way the shown menu expects. TrackPopupMenuEx blocks
-    # while the user reads, and ui_menu[0] can flip under it (the UI boots via
-    # §25's ensure_running, or dies mid-open) — and the two command namespaces
-    # (fallback 102/109 vs UI 201–209) are disjoint, so re-reading the cache at
-    # click time drops the click (cycle-2 review, finding 1). Window thread only,
-    # so a plain cell is race-free.
-    served_from_ui = [False]
-
-    def menu_model() -> tuple[TrayMenuItem, ...]:
-        # Window thread. Opening the menu is a demand that raises the interface
-        # too (§25); once it has sent its model, that is what we show.
-        ui_host.ensure_running()
-        ui = ui_menu[0]
-        served_from_ui[0] = ui is not None
-        if ui is not None:
-            return ui
-        # Dead-interface minimum (OQ §22): enough to toggle and quit. driver.state
-        # is a frozen record rebound atomically, safe to read from this thread.
-        return (
-            TrayMenuItem(CMD_TOGGLE, "Диктовка включена", checked=driver.state.enabled),
-            TrayMenuItem(),
-            TrayMenuItem(CMD_EXIT, "Выход"),
-        )
-
-    def on_tray_command(command: int) -> None:
-        # Route by the model that was actually shown, not by re-reading the cache
-        # (which may have flipped during the blocking menu). When the interface
-        # owns the menu it owns the click — forward it and let the UI answer
-        # (toggle_dictation / shutdown / a window).
-        if served_from_ui[0]:
-            server.send(menu_command(command))
-            return
-        if command == CMD_TOGGLE:
-            driver.post(SetDictationEnabled(not driver.state.enabled))
-        elif command == CMD_EXIT:
-            driver.post(Exit())
-
     window = HiddenWindow()
     window.start()
     tray: TrayIcon | None = None
     if window.wait_ready(5.0) and window.hwnd:
-        tray = TrayIcon(window, menu_provider=menu_model, on_command=on_tray_command)
+        tray = TrayIcon(window, menu_provider=bridge.provide, on_command=bridge.route_click)
         if not tray.add():
             log.warning("tray icon failed to add; continuing without it")
             tray = None
@@ -299,23 +233,21 @@ def main() -> int:
         log.warning("hidden window failed to start; continuing without a tray")
 
     def publish(state) -> None:  # driver thread; display only
-        tstate = tray_state_for(
+        plan = plan_publish(
             phase_name=state.phase.name,
             enabled=state.enabled,
             offline=gate.offline,
             queue_len=len(state.queue),
         )
         # count_waiting() touches the store on the driver thread — the one that
-        # owns the single SQLite connection — so it is safe here. Only the
-        # offline icon shows a number (spec §3), so only offline pays the query.
-        waiting = store.count_waiting() if tstate is TrayState.OFFLINE else 0
+        # owns the single SQLite connection — so it is safe here.
+        waiting = store.count_waiting() if plan.count_waiting else 0
         if tray is not None:
-            tray.set_state(tstate, tooltip=tray_tooltip_for(tstate, waiting=waiting))
-        # Raise the interface lazily on the first dictation so the plashka is up
-        # by Finalizing (OPEN-QUESTIONS §25); it stays up afterwards.
-        if state.phase.name in _ACTIVE_PHASE_NAMES:
+            tray.set_state(plan.tray_state,
+                           tooltip=tray_tooltip_for(plan.tray_state, waiting=waiting))
+        if plan.raise_ui:
             ui_host.ensure_running()
-        server.send(state_changed(tstate.value, queue_len=len(state.queue)))
+        server.send(plan.frame())
 
     deps.publish_state = publish
 
