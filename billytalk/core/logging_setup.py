@@ -108,9 +108,16 @@ class RedactionFilter(logging.Filter):
         return not any(isinstance(arg, Sensitive) for arg in candidates)
 
 
-def configure_logging(log_dir: Path, *, level: int = logging.INFO) -> logging.Logger:
-    """Install the rotating core log with redaction attached, and quiet the noisy
+def configure_logging(
+    log_dir: Path, *, level: int = logging.INFO, filename: str = "core.log"
+) -> logging.Logger:
+    """Install the rotating log with redaction attached, and quiet the noisy
     third-party loggers.
+
+    ``filename`` lets the two processes keep separate logs (``core.log`` and the
+    UI's ``ui.log``): one rotating handler per file, never two processes rotating
+    the same one. The redaction guarantee is identical — the UI receives
+    ``transcription_ready``, which carries the user's words.
 
     The filter is attached to the *handler*, not to one logger: a filter on a
     logger is not consulted for records that propagate up from its children, so a
@@ -118,7 +125,7 @@ def configure_logging(log_dir: Path, *, level: int = logging.INFO) -> logging.Lo
     """
     log_dir.mkdir(parents=True, exist_ok=True)
     handler = logging.handlers.RotatingFileHandler(
-        log_dir / "core.log",
+        log_dir / filename,
         maxBytes=LOG_ROTATION_BYTES,
         backupCount=LOG_ROTATION_COUNT,
         encoding="utf-8",

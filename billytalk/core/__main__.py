@@ -16,6 +16,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import win32api
+import win32process
+
 from .audio.capture import CaptureSession
 from .audio.cues import play_cue
 from .audio.encode import encode_flac
@@ -26,6 +29,8 @@ from .hooks.watchdog import HookWatchdog
 from .insert.clipboard import Clipboard
 from .insert.focus import capture_target
 from .insert.inserter import Inserter
+from .ipc.protocol import state_changed
+from .ipc.server import IpcServer, PipeBusy, pipe_name
 from .logging_setup import configure_logging
 from .machine.driver import Driver, DriverDeps
 from .machine.effects import ErrorCode
@@ -34,9 +39,21 @@ from .stt.groq import GroqProvider
 from .store import CleanupGate, HistoryStore, connect, ensure_schema, load_config
 from .store import secrets
 from .text.dictionary import Dictionary
-from .tray import HiddenWindow, TrayIcon, TrayMenuItem, tray_state_for, tray_tooltip_for
+from .tray import (
+    HiddenWindow,
+    TrayIcon,
+    TrayMenuItem,
+    TrayState,
+    tray_state_for,
+    tray_tooltip_for,
+)
+from .ui_launch import UiHost
 
 log = logging.getLogger("billytalk.main")
+
+_ACTIVE_PHASE_NAMES = frozenset({"Initialized", "Recording", "Finalizing", "Delivering"})
+"""Phases where a dictation is in flight — the trigger to have the interface up
+so the plashka can show through Finalizing/Delivering (OPEN-QUESTIONS §25)."""
 
 _ACTION_HINTS: dict[ErrorCode, str] = {
     ErrorCode.MIC_DENIED: "откройте Параметры → Конфиденциальность → Микрофон",
@@ -129,6 +146,40 @@ def main() -> int:
     )
     driver = Driver(deps)
 
+    # -- IPC: the channel the interface speaks over, and the single-instance
+    #    gate. FILE_FLAG_FIRST_PIPE_INSTANCE makes start() fail if the name is
+    #    taken, so a second core refuses **here**, before it installs the global
+    #    hooks (harness §2, §3; acceptance «второй экземпляр ядра не запускается»).
+    channel_name = pipe_name()
+
+    def ipc_handler(message):
+        """UI → core. Fire-and-forget for milestone 2; the config/history/hotkey
+        verbs are milestone 3. Runs on the server's read thread — it only posts
+        events, the same as the tray does from the window thread."""
+        kind = message.get("type")
+        if kind == "toggle_dictation":
+            enabled = message.get("enabled")
+            if enabled is None:
+                enabled = not driver.state.enabled
+            driver.post(SetDictationEnabled(bool(enabled)))
+        elif kind == "shutdown":
+            driver.post(Exit())
+        return None
+
+    server = IpcServer(channel_name, handler=ipc_handler)
+    try:
+        server.start()
+    except PipeBusy:
+        print("[billytalk] ядро уже запущено", flush=True)
+        return 4
+
+    # The interface verifies this exact image before it trusts the channel
+    # (ui/ipc/client). GetModuleFileNameEx, not sys.executable: under a uv venv
+    # the trampoline and the real image differ (harness §13).
+    core_image = win32process.GetModuleFileNameEx(win32api.GetCurrentProcess(), 0)
+    # cycle 3: the frozen build launches itself with a flag, not `-m`.
+    ui_host = UiHost([sys.executable, "-m", "billytalk.ui", channel_name, core_image])
+
     waiting = driver.enqueue_startup_pending()
     if waiting:
         print(f"[billytalk] {waiting} записей ждут расшифровки", flush=True)
@@ -168,6 +219,9 @@ def main() -> int:
 
     def menu_model() -> tuple[TrayMenuItem, ...]:
         # Window thread; driver.state is a frozen record rebound atomically.
+        # Opening the menu is a demand that raises the interface too (§25); its
+        # own model arrives over IPC in the next step, with this as the fallback.
+        ui_host.ensure_running()
         return (
             TrayMenuItem(101, "Открыть настройки", enabled=False),  # UI: далее в цикле 2
             TrayMenuItem(),
@@ -193,24 +247,26 @@ def main() -> int:
     else:
         log.warning("hidden window failed to start; continuing without a tray")
 
-    if tray is not None:
-        tray_ref = tray
+    def publish(state) -> None:  # driver thread; display only
+        tstate = tray_state_for(
+            phase_name=state.phase.name,
+            enabled=state.enabled,
+            offline=gate.offline,
+            queue_len=len(state.queue),
+        )
+        # count_waiting() touches the store on the driver thread — the one that
+        # owns the single SQLite connection — so it is safe here. Only the
+        # offline icon shows a number (spec §3), so only offline pays the query.
+        waiting = store.count_waiting() if tstate is TrayState.OFFLINE else 0
+        if tray is not None:
+            tray.set_state(tstate, tooltip=tray_tooltip_for(tstate, waiting=waiting))
+        # Raise the interface lazily on the first dictation so the plashka is up
+        # by Finalizing (OPEN-QUESTIONS §25); it stays up afterwards.
+        if state.phase.name in _ACTIVE_PHASE_NAMES:
+            ui_host.ensure_running()
+        server.send(state_changed(tstate.value, queue_len=len(state.queue)))
 
-        def publish(state) -> None:  # driver thread; display only
-            tstate = tray_state_for(
-                phase_name=state.phase.name,
-                enabled=state.enabled,
-                offline=gate.offline,
-                queue_len=len(state.queue),
-            )
-            # count_waiting() touches the store on the driver thread — the one
-            # that owns the single SQLite connection — so it is safe here. Only
-            # the offline icon shows a number (spec §3), so only offline pays for
-            # the query.
-            waiting = store.count_waiting() if tstate is TrayState.OFFLINE else 0
-            tray_ref.set_state(tstate, tooltip=tray_tooltip_for(tstate, waiting=waiting))
-
-        deps.publish_state = publish
+    deps.publish_state = publish
 
     # Everything long-lived exists; move it out of GC's reach so a collection
     # pass never runs inside the hook callback's budget (spec §2, ADR-0004).
@@ -224,6 +280,8 @@ def main() -> int:
     finally:
         if tray is not None:
             tray.remove()
+        server.stop()      # drop the channel; the interface exits itself on it
+        ui_host.stop()     # backstop a hung interface
         window.stop()
         hook.stop()
         stt_pool.shutdown(wait=False, cancel_futures=True)

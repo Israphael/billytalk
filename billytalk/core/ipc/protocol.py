@@ -42,6 +42,7 @@ __all__ = [
     "hello_ack",
     "protocol_mismatch",
     "reply",
+    "state_changed",
 ]
 
 PROTOCOL_VERSION: Final = 1
@@ -158,4 +159,17 @@ def reply(request_id: int, result: dict[str, Any] | None = None,
         message["error"] = error
     else:
         message["result"] = result if result is not None else {}
+    return message
+
+
+def state_changed(state: str, *, queue_len: int = 0,
+                  detail: str | None = None) -> dict[str, Any]:
+    """Core → UI display push (harness §3): the display state the tray and the
+    plashka read, the queue depth, and an optional human detail. It carries no
+    transcript — the words travel only in ``transcription_ready``, keyed by
+    ``id`` (spec §13); this event is safe to log by type."""
+    message: dict[str, Any] = {"type": "state_changed", "state": state,
+                               "queue_len": queue_len}
+    if detail is not None:
+        message["detail"] = detail
     return message
