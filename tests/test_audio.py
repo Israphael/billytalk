@@ -224,6 +224,38 @@ def test_zz_portaudio_reload_survives_with_no_stream_open() -> None:
     assert len(sd.query_devices()) >= 0  # the library is alive and answering
 
 
+def test_reload_stops_a_playing_stream_before_unloading(monkeypatch) -> None:
+    """cue-review, medium: a fire-and-forget cue is a second PortAudio stream;
+    the reload must stop it (through the still-loaded library) BEFORE it
+    unloads, or it frees the DLL under the playing cue. Pins the order:
+    sd.stop() precedes the terminate/dlclose. A fake sounddevice module records
+    the call order — the real _ffi.dlclose is a read-only cffi attribute."""
+    import sys
+    from types import SimpleNamespace
+
+    order: list[str] = []
+    fake = SimpleNamespace(
+        _lib="lib-old",
+        _libname="portaudio",
+        _ffi=SimpleNamespace(
+            dlclose=lambda lib: order.append("dlclose"),
+            dlopen=lambda name: (order.append("dlopen"), "lib-new")[1],
+        ),
+        stop=lambda: order.append("stop"),
+        _terminate=lambda: order.append("terminate"),
+        _initialize=lambda: order.append("init"),
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", fake)
+
+    from billytalk.core.audio.devices import reload_portaudio
+
+    reload_portaudio()
+
+    assert order and order[0] == "stop", "the play stream closes before the library unloads"
+    assert order.index("stop") < order.index("terminate") < order.index("dlclose")
+    assert fake._lib == "lib-new", "the freshly dlopened handle replaced the old one"
+
+
 # --------------------------------------------------------------------------- #
 # ranked microphone with auto-fallback (spec §5) — pure
 # --------------------------------------------------------------------------- #

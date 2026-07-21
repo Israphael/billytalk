@@ -69,10 +69,15 @@ _EXPORT_FORMATS: Final = frozenset({"txt", "csv", "json"})
 # What set_config may touch, with a validator each: everything else in Config
 # is either wizard/cycle-3 territory (ptt_code changes ride the M3 capture
 # verbs, not a raw patch) or internal (schema_version, usage, caps).
+#
+# groq_model is deliberately NOT here: GroqProvider binds its model at
+# construction and apply_config_to_deps does not refresh it, so patching it
+# would drift the running provider (old model) from what get_config shows
+# (new) until restart. No shipped control sends it (the model row is a label);
+# a live model switch is cycle-3 work with a provider refresh (cue-review §33).
 _PATCHABLE: Final[dict[str, Callable[[Any], bool]]] = {
     "language": lambda v: v in ("ru", "en"),
     "audio_input_device": lambda v: v is None or (isinstance(v, str) and len(v) < 256),
-    "groq_model": lambda v: isinstance(v, str) and 0 < len(v) < 128,
     "polish_enabled": lambda v: isinstance(v, bool),
     "press_enter_after": lambda v: isinstance(v, bool),
     "retention_minutes": lambda v: isinstance(v, int) and not isinstance(v, bool)

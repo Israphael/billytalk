@@ -139,6 +139,7 @@ def test_set_config_patches_saves_and_refreshes_deps(world: World) -> None:
         {"language": "de"},              # not an MVP-0 language
         {"retention_minutes": True},     # bool is not an int here
         {"retention_minutes": 0},        # out of range
+        {"groq_model": "whisper-x"},     # not patchable: provider binds it at start
         {"unknown_key": 1},
         {},                              # an empty patch patches nothing
         "not a dict",
@@ -148,6 +149,17 @@ def test_set_config_rejects_bad_patches(world: World, patch: object) -> None:
     frame = world.services.handle("set_config", {"id": 3, "patch": patch})
     assert frame == {"type": "reply", "id": 3, "error": "bad_patch"}
     assert world.config.language == "ru", "a rejected patch changes nothing"
+
+
+def test_set_config_does_not_patch_the_groq_model(world: World) -> None:
+    """cue-review, low: GroqProvider binds its model at construction and
+    apply_config_to_deps does not refresh it, so accepting the patch would
+    drift the running provider from what get_config reports. Refused."""
+    frame = world.services.handle(
+        "set_config", {"id": 33, "patch": {"groq_model": "whisper-large-v3"}}
+    )
+    assert frame == {"type": "reply", "id": 33, "error": "bad_patch"}
+    assert world.config.groq_model == "whisper-large-v3-turbo", "the model is untouched"
 
 
 # --------------------------------------------------------------------------- #

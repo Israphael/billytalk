@@ -51,12 +51,17 @@ def test_unsuppressed_press_keeps_its_release_unsuppressed() -> None:
 
 
 def test_release_after_unbinding_still_follows_pairing() -> None:
+    """A press that reached the machine as "press" must reach it as "release"
+    too, even if the code was unbound between the edges (an M3 capture rebind
+    is the live path) — else the machine stays Recording with the button up,
+    hot mic to the fuse (cue-review, veha 3). BOTH the suppression and the
+    event pair with what the press did, never the current bound set."""
     edges = EdgeLogic()
     edges.on_edge(PTT, pressed=True, now_ms=0, snapshot=ARMED)
     unbound = HookSnapshot(bound=frozenset(), suppress=True, recording=False)
     up = edges.on_edge(PTT, pressed=False, now_ms=100, snapshot=unbound)
     assert up.suppress, "the press was swallowed; its release must be too"
-    assert up.event is None, "but an unbound code no longer reports"
+    assert up.event == "release", "the press reported, so its release must — or hot mic"
 
 
 def test_tracks_reflects_pending_edge_state() -> None:
@@ -378,3 +383,27 @@ def test_capture_takes_priority_over_a_bound_press() -> None:
     edges = EdgeLogic()
     down = edges.on_edge(PTT, pressed=True, now_ms=0, snapshot=CAPTURING)
     assert down.event == "capture" and down.suppress
+
+
+def test_capturing_a_new_key_mid_hold_does_not_finalise_the_held_dictation() -> None:
+    """cue-review, medium: a live rebind during a held-PTT dictation. The tap
+    of the just-captured key must NOT emit ReleasePTT — the release event pairs
+    with what the press meant, not with the current bound set. And the real
+    release of the old, now-unbound key must still emit its release, or the
+    machine sits Recording with the button up (hot mic to the fuse)."""
+    edges = EdgeLogic()
+    old, new = PTT, 4100
+    armed_old = HookSnapshot(bound=frozenset({old}), suppress=True, recording=True)
+    # 1. hold the old PTT — a real dictation press.
+    assert edges.on_edge(old, pressed=True, now_ms=0, snapshot=armed_old).event == "press"
+    # 2. capture arms; tap the new key — swallowed as a capture, no machine event.
+    capturing = HookSnapshot(bound=frozenset({old}), suppress=True, recording=True, capture=True)
+    tap = edges.on_edge(new, pressed=True, now_ms=10, snapshot=capturing)
+    assert tap.event == "capture"
+    # 3. binding applied → bound is now {new}, capture off.
+    armed_new = HookSnapshot(bound=frozenset({new}), suppress=True, recording=True)
+    up_new = edges.on_edge(new, pressed=False, now_ms=20, snapshot=armed_new)
+    assert up_new.event is None, "the captured key's release must not finalise the dictation"
+    # 4. the user finally releases the OLD key they were holding → THAT ends it.
+    up_old = edges.on_edge(old, pressed=False, now_ms=30, snapshot=armed_new)
+    assert up_old.event == "release", "the held key's release still reaches the machine"

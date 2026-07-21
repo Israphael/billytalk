@@ -78,13 +78,23 @@ def resolve_input_device(
 def reload_portaudio() -> None:
     """Refresh the frozen device list. Measured at 42 ms (research/07 S3).
 
-    Preconditions are the caller's: **no stream may be open.** The sequence is
-    the one the spike verified on this exact stack; sounddevice has no public
-    API for it, so the private names are pinned by the test suite instead of an
-    upstream promise.
+    The caller gates on the **capture** stream being closed (machine phase),
+    but a fire-and-forget **cue** (``play_cue`` → ``sd.play``) is a second
+    PortAudio output stream that can be live in Finalizing/Delivering/Idle —
+    exactly when a deferred reload fires. Unloading the library from under a
+    playing cue is the use-after-free S3 warned "surviving once is not being
+    correct" about (cue-review, veha 3). So the reload honours its own
+    precondition itself: ``sd.stop()`` closes any playing stream through the
+    still-loaded library first (a no-op when nothing plays; at worst it clips
+    a stop/clipboard cue — cheap against a crash). ``_terminate`` still cannot
+    run while the capture stream is open; that stays the caller's contract.
+
+    ``sounddevice`` has no public reload API, so the private names are pinned
+    by the test suite instead of an upstream promise.
     """
     import sounddevice as sd
 
+    sd.stop()
     sd._terminate()
     sd._ffi.dlclose(sd._lib)
     sd._lib = sd._ffi.dlopen(sd._libname)

@@ -105,11 +105,18 @@ class EdgeLogic:
         self._suppressed_down: set[int] = set()
         self._foreign_down: set[int] = set(already_down)
         self._keys_down: set[int] = set()
+        # Codes whose PRESS emitted a machine event ("press"). The release
+        # event is paired with what the press MEANT, not with the current bound
+        # set — a live rebind mid-hold (M3 capture) otherwise makes the tap of
+        # the just-captured key emit ReleasePTT into a dictation the user is
+        # still holding, or leaves the machine Recording with the button up
+        # (cue-review, veha 3). This mirrors the suppression-pairing rule.
+        self._press_emitted: set[int] = set()
         self._last_esc_ms: int | None = None
 
     def tracks(self, code: int) -> bool:
         """Does this code have pending edge state — a held key, a swallowed
-        press, a foreign mark?
+        press, an emitted press, a foreign mark?
 
         The ctypes layer must route an edge here when the code is bound OR
         tracked: gating on the current bound set alone delivers an orphaned
@@ -120,6 +127,7 @@ class EdgeLogic:
         return (
             code in self._keys_down
             or code in self._suppressed_down
+            or code in self._press_emitted
             or code in self._foreign_down
         )
 
@@ -170,14 +178,21 @@ class EdgeLogic:
             suppress = snapshot.suppress and code in snapshot.bound
             if suppress:
                 self._suppressed_down.add(code)
-            event = "press" if code in snapshot.bound else None
+            if code in snapshot.bound:
+                self._press_emitted.add(code)
+                event = "press"
+            else:
+                event = None
             return EdgeDecision(suppress=suppress, event=event, code=code)
 
-        # Release: pairing outranks everything (spec §2).
+        # Release: pairing outranks everything (spec §2). Both the suppression
+        # and the event pair with what the PRESS did, never the current bound
+        # set — else a rebind between the edges orphans one of them.
         self._keys_down.discard(code)
         suppress = code in self._suppressed_down
         self._suppressed_down.discard(code)
-        event = "release" if code in snapshot.bound else None
+        event = "release" if code in self._press_emitted else None
+        self._press_emitted.discard(code)
         return EdgeDecision(suppress=suppress, event=event, code=code)
 
     def _on_esc(self, *, pressed: bool, now_ms: int, snapshot: HookSnapshot) -> EdgeDecision:
