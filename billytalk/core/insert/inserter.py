@@ -1,4 +1,4 @@
-"""The delivery ladder (spec §8), cycle-1 scope: no verification yet.
+"""The delivery ladder (spec §8), verification included since cycle-2 M1.
 
 Order, with the reasons welded on:
 
@@ -15,6 +15,10 @@ Order, with the reasons welded on:
 6. Send the chord — VK 0x56 without ``KEYEVENTF_SCANCODE``, so it survives
    Cyrillic, AZERTY and DVORAK layouts — marked with ``SELF_MARK`` so our own
    hook passes it through instead of re-entering itself.
+7. Verify by the UIA ``TextPattern`` read (``verify.py``, research/12):
+   ``inserted`` / silent ``verify_impossible`` / loud ``paste_failed``. The
+   baseline is taken **before** the chord — after it, the pre-paste caret is
+   gone.
 
 Restoration of the user's clipboard happens later, scheduled by the driver
 after :data:`RESTORE_DELAY_MS`: restoring immediately would race the target's
@@ -39,6 +43,7 @@ from ..machine.effects import DeliveryStatus, ErrorCode
 from .apprules import AppRule, PasteChord, rule_for
 from .clipboard import Clipboard, ClipboardSnapshot
 from .focus import Target, is_still_focused, try_restore_focus
+from .verify import InsertVerifier, VerifyOutcome
 
 __all__ = ["InsertFailure", "InsertReport", "Inserter", "RESTORE_DELAY_MS", "prepare_text"]
 
@@ -126,6 +131,11 @@ class InsertFailure:
 @dataclass(frozen=True, slots=True)
 class InsertReport:
     ok: bool
+    status: DeliveryStatus = DeliveryStatus.INSERTED
+    """The precise row status for the ok path: ``INSERTED`` when the paste was
+    verified (or verification is not wired, the cycle-1 stance), the silent
+    ``VERIFY_IMPOSSIBLE`` when the signal was unavailable (spec §8). The driver
+    writes it the same way it writes ``failure.status`` (OPEN-QUESTIONS §17)."""
     failure: InsertFailure | None = None
 
 
@@ -137,6 +147,7 @@ class Inserter:
         self,
         clipboard: Clipboard,
         *,
+        verifier: InsertVerifier | None = None,
         send_chord: Callable[[PasteChord], None] = send_paste_chord,
         any_modifier_down: Callable[[], bool] = modifiers_down,
         focused: Callable[[Target], bool] = is_still_focused,
@@ -145,6 +156,7 @@ class Inserter:
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._clipboard = clipboard
+        self._verifier = verifier
         self._send_chord = send_chord
         self._any_modifier_down = any_modifier_down
         self._focused = focused
@@ -155,8 +167,12 @@ class Inserter:
     def rule_for_target(self, target: Target) -> AppRule:
         return rule_for(target.process_name, target.window_class)
 
-    def insert(self, target: Target, snapshot: ClipboardSnapshot) -> InsertReport:
-        """Steps 2–6 of the ladder. The clipboard write already happened."""
+    def insert(
+        self, target: Target, snapshot: ClipboardSnapshot, text: str | None = None
+    ) -> InsertReport:
+        """Steps 2–7 of the ladder. The clipboard write already happened;
+        ``text`` is what it wrote (post ``prepare_text``) — the needle the
+        verification searches for. ``None`` (or no verifier) skips step 7."""
         rule = self.rule_for_target(target)
 
         if target.secure:
@@ -201,10 +217,36 @@ class Inserter:
                 ),
             )
 
+        if self._verifier is None or text is None:
+            # No verifier wired (tests, cycle-1 assemblies): the report says
+            # the chord was sent — the cycle-1 stance, status INSERTED.
+            self._send_chord(rule.paste)
+            return InsertReport(ok=True)
+
+        # The baseline must precede the chord: afterwards the pre-paste caret
+        # position is gone. A None baseline is already the verify_impossible
+        # verdict and rides through verify() unchanged.
+        verify_hwnd = target.focus_hwnd or target.hwnd
+        baseline = self._verifier.baseline(verify_hwnd)
         self._send_chord(rule.paste)
-        # Cycle 1 has no verification (harness §9): the report says the chord
-        # was sent, not that text landed. Cycle 2's verify.py earns InsertOk.
-        return InsertReport(ok=True)
+        outcome = self._verifier.verify(verify_hwnd, text, baseline)
+        if outcome is VerifyOutcome.PASTE_FAILED:
+            # Loud (spec §8): the document provably ignored the chord. The text
+            # stays on the clipboard, so the status is left_on_clipboard with
+            # the precise error code — the same shape OPEN-QUESTIONS §16 set.
+            return InsertReport(
+                ok=False,
+                failure=InsertFailure(
+                    ErrorCode.PASTE_FAILED, DeliveryStatus.LEFT_ON_CLIPBOARD,
+                    "verified: target document unchanged after the chord",
+                ),
+            )
+        status = (
+            DeliveryStatus.INSERTED
+            if outcome is VerifyOutcome.INSERTED
+            else DeliveryStatus.VERIFY_IMPOSSIBLE
+        )
+        return InsertReport(ok=True, status=status)
 
     def _wait_modifiers_released(self) -> bool:
         deadline = self._clock() + MODIFIER_WAIT_MS / 1000

@@ -29,6 +29,7 @@ from .hooks.watchdog import HookWatchdog
 from .insert.clipboard import Clipboard
 from .insert.focus import capture_target
 from .insert.inserter import Inserter
+from .insert.verify import InsertVerifier
 from .ipc.server import IpcServer, PipeBusy, pipe_name
 from .logging_setup import configure_logging
 from .machine.driver import Driver, DriverDeps
@@ -104,7 +105,9 @@ def main() -> int:
 
     provider = GroqProvider(groq_key, model=config.groq_model)
     clipboard = Clipboard()
-    inserter = Inserter(clipboard)
+    # The verifier's COM side initialises lazily on the driver thread — the
+    # only thread that ever calls the insert ladder (verify.py's contract).
+    inserter = Inserter(clipboard, verifier=InsertVerifier())
     stt_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="billytalk-stt")
 
     hook_holder: list[HookThread] = []

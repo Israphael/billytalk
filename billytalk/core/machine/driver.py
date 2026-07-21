@@ -196,8 +196,14 @@ class _DictationState:
     text: Transcript | None = None
     result: TranscriptionResult | None = None
     snapshot: Any = None  # ClipboardSnapshot
+    pasted_text: str | None = None
+    """What _write_clipboard actually wrote (post prepare_text) — the needle
+    the insert verification searches the target document for (spec §8)."""
     cancelled: bool = False
     last_insert_failure: InsertFailure | None = None
+    last_insert_status: DeliveryStatus | None = None
+    """The ok-path twin of last_insert_failure (OPEN-QUESTIONS §17): INSERTED
+    when the paste verified, VERIFY_IMPOSSIBLE when the signal was silent."""
 
 
 @dataclass
@@ -459,6 +465,11 @@ class Driver:
         if isinstance(cause, InsertFailed) and dictation.last_insert_failure is not None:
             status = dictation.last_insert_failure.status
             error_code = dictation.last_insert_failure.code.value
+        # Same mechanism for the ok path (cycle-2 M1): the machine's InsertOk
+        # cell says INSERTED; the verification may have downgraded that to the
+        # silent VERIFY_IMPOSSIBLE (spec §8) — the report's word is final.
+        if isinstance(cause, InsertOk) and dictation.last_insert_status is not None:
+            status = dictation.last_insert_status
         if status is DeliveryStatus.CANCELLED:
             # OPEN-QUESTIONS §5: no CancelTranscribe verb exists; the mark is
             # what a late transcription result checks before delivering.
@@ -536,6 +547,7 @@ class Driver:
             getattr(dictation.target, "window_class", None),
         )
         text = prepare_text(dictation.text.value, rule)
+        dictation.pasted_text = text
         dictation.snapshot = self.deps.clipboard.write(text)
 
     def _insert(self, seq: int) -> None:
@@ -548,8 +560,11 @@ class Driver:
             )
             self.post(InsertFailed(seq, code=ErrorCode.FOCUS_LOST))
             return
-        report = self.deps.inserter.insert(dictation.target, dictation.snapshot)
+        report = self.deps.inserter.insert(
+            dictation.target, dictation.snapshot, dictation.pasted_text
+        )
         if report.ok:
+            dictation.last_insert_status = report.status
             snapshot = dictation.snapshot
             # Restore later, not now: an immediate restore races the target's
             # WM_PASTE handling and pastes the restored content instead of ours.

@@ -10,6 +10,7 @@ from billytalk.core.insert.apprules import PasteChord, rule_for
 from billytalk.core.insert.clipboard import ClipboardSnapshot
 from billytalk.core.insert.focus import Target
 from billytalk.core.insert.inserter import Inserter, prepare_text
+from billytalk.core.insert.verify import DocSnapshot, VerifyOutcome
 from billytalk.core.machine.effects import DeliveryStatus, ErrorCode
 from tests.fakes.input import FakeInput
 
@@ -203,3 +204,99 @@ def test_replaced_clipboard_cancels_the_paste() -> None:
     assert not report.ok and report.failure is not None
     assert report.failure.code is ErrorCode.PASTE_FAILED
     assert fake.chords == [], "no chord: Ctrl+V would deliver someone else's clipboard"
+
+
+# --------------------------------------------------------------------------- #
+# step 7: verification (spec §8, cycle-2 M1)
+# --------------------------------------------------------------------------- #
+
+
+class ScriptVerifier:
+    """Records the ladder's calls; answers a scripted verdict."""
+
+    def __init__(self, outcome: VerifyOutcome, events: list[str] | None = None) -> None:
+        self.outcome = outcome
+        self.events = events if events is not None else []
+        self.baseline_hwnds: list[object] = []
+        self.verified: list[tuple[object, str]] = []
+
+    def baseline(self, hwnd: object) -> DocSnapshot:
+        self.events.append("baseline")
+        self.baseline_hwnds.append(hwnd)
+        return DocSnapshot(text="", caret_offset=0)
+
+    def verify(self, hwnd: object, text: str, baseline: object) -> VerifyOutcome:
+        self.events.append("verify")
+        self.verified.append((hwnd, text))
+        return self.outcome
+
+
+def _verified_inserter(
+    fake: FakeInput, outcome: VerifyOutcome
+) -> tuple[Inserter, ScriptVerifier]:
+    events: list[str] = []
+    verifier = ScriptVerifier(outcome, events)
+    inserter = Inserter(
+        StubClipboard(),  # type: ignore[arg-type]
+        verifier=verifier,  # type: ignore[arg-type]
+        send_chord=lambda chord: (events.append("chord"), fake.send_chord(chord))[-1],
+        any_modifier_down=fake.any_modifier_down,
+        focused=lambda _t: True,
+        restore_focus=lambda _t: False,
+        clock=fake.clock,
+        sleep=fake.sleep,
+    )
+    return inserter, verifier
+
+
+def test_verified_paste_reports_inserted_and_baselines_before_the_chord() -> None:
+    fake = FakeInput()
+    inserter, verifier = _verified_inserter(fake, VerifyOutcome.INSERTED)
+    report = inserter.insert(_target(), SNAPSHOT, "текст")
+
+    assert report.ok and report.status is DeliveryStatus.INSERTED
+    assert verifier.events == ["baseline", "chord", "verify"], (
+        "the baseline must precede the chord — after it the caret is gone"
+    )
+    assert verifier.baseline_hwnds == [0x222], "the focused control, not the top window"
+    assert verifier.verified == [(0x222, "текст")]
+
+
+def test_silent_signal_reports_verify_impossible_but_still_ok() -> None:
+    fake = FakeInput()
+    inserter, _ = _verified_inserter(fake, VerifyOutcome.VERIFY_IMPOSSIBLE)
+    report = inserter.insert(_target(), SNAPSHOT, "текст")
+
+    assert report.ok, "verify_impossible is the silent ok (spec §8)"
+    assert report.status is DeliveryStatus.VERIFY_IMPOSSIBLE
+    assert report.failure is None
+
+
+def test_verified_paste_failed_goes_loud_with_the_precise_code() -> None:
+    fake = FakeInput()
+    inserter, _ = _verified_inserter(fake, VerifyOutcome.PASTE_FAILED)
+    report = inserter.insert(_target(), SNAPSHOT, "текст")
+
+    assert not report.ok and report.failure is not None
+    assert report.failure.code is ErrorCode.PASTE_FAILED
+    assert report.failure.status is DeliveryStatus.LEFT_ON_CLIPBOARD
+    assert fake.chords == [PasteChord.CTRL_V], "the chord DID go out; the target ate it"
+
+
+def test_no_text_skips_verification_entirely() -> None:
+    """A caller that has no needle (or a cycle-1 assembly with no verifier)
+    keeps the old contract: chord sent, INSERTED, nothing consulted."""
+    fake = FakeInput()
+    inserter, verifier = _verified_inserter(fake, VerifyOutcome.PASTE_FAILED)
+    report = inserter.insert(_target(), SNAPSHOT, None)
+
+    assert report.ok and report.status is DeliveryStatus.INSERTED
+    assert verifier.events == ["chord"], "no baseline, no verify — just the paste"
+
+
+def test_focus_hwnd_falls_back_to_the_top_window() -> None:
+    fake = FakeInput()
+    inserter, verifier = _verified_inserter(fake, VerifyOutcome.INSERTED)
+    inserter.insert(_target(focus_hwnd=None), SNAPSHOT, "текст")
+
+    assert verifier.baseline_hwnds == [0x111]

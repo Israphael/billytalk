@@ -86,8 +86,10 @@ class StubInserter:
         self.reports: list[InsertReport] = []
         self.calls: list[Any] = []
 
-    def insert(self, target: Any, snapshot: ClipboardSnapshot) -> InsertReport:
-        self.calls.append((target, snapshot))
+    def insert(
+        self, target: Any, snapshot: ClipboardSnapshot, text: str | None = None
+    ) -> InsertReport:
+        self.calls.append((target, snapshot, text))
         if self.reports:
             return self.reports.pop(0)
         return InsertReport(ok=True)
@@ -498,3 +500,40 @@ def test_housekeeping_skips_cleanup_while_offline(tmp_path: Path) -> None:
     world.gate.transcribe_succeeded(world.clock.now)
     world.advance(11 * 60 * 1000)
     assert not clip.exists(), "ten minutes after the first success, cleanup resumed"
+
+
+# --------------------------------------------------------------------------- #
+# verification statuses ride the report into the row (spec §8, cycle-2 M1)
+# --------------------------------------------------------------------------- #
+
+
+def test_verify_impossible_lands_in_the_row_and_stays_silent(tmp_path: Path) -> None:
+    """The machine's InsertOk cell says INSERTED; the report's word is final
+    (the ok twin of OPEN-QUESTIONS §17). And silence means silence: no cue
+    beyond the ordinary stop, no notification — the customer's decision."""
+    world = build_world(tmp_path, outcomes=[FakeProvider.ok("текст")])
+    world.inserter.reports.append(
+        InsertReport(ok=True, status=DeliveryStatus.VERIFY_IMPOSSIBLE)
+    )
+    dictate(world)
+    world.run_jobs()
+
+    row = world.row()
+    assert row["delivery_status"] == "verify_impossible"
+    assert row["audio_release_at"] is not None, (
+        "delivered to the user via the clipboard: the one-hour shelf clock runs"
+    )
+    assert world.notices == []
+    assert Cue.CLIPBOARD not in world.cues and Cue.ERROR not in world.cues
+    assert world.driver.state.phase is Phase.Idle
+
+
+def test_the_inserter_receives_the_prepared_text_as_the_needle(tmp_path: Path) -> None:
+    """What verification searches for must be exactly what the clipboard got —
+    the post-prepare_text text, newline flattening included."""
+    world = build_world(tmp_path, outcomes=[FakeProvider.ok("текст")])
+    dictate(world)
+    world.run_jobs()
+
+    _target_, _snapshot, needle = world.inserter.calls[0]
+    assert needle == world.clipboard.writes[0]
