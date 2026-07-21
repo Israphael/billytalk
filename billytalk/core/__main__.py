@@ -26,6 +26,7 @@ from .audio.trim import trim_silence
 from .hooks.edges import HookSnapshot
 from .hooks.lowlevel import HookThread
 from .hooks.watchdog import HookWatchdog
+from .audio.devices import input_device_names, reload_portaudio, resolve_input_device
 from .insert.clipboard import Clipboard
 from .insert.focus import capture_target
 from .insert.inserter import Inserter
@@ -38,6 +39,7 @@ from .machine.effects import ErrorCode
 from .machine.events import Exit, HookDied
 from .services import UiServices
 from .store.config import save_config
+from .system_events import SystemEvents
 from .stt.groq import GroqProvider
 from .store import CleanupGate, HistoryStore, connect, ensure_schema, load_config
 from .store import secrets
@@ -111,6 +113,15 @@ def main() -> int:
     # The verifier's COM side initialises lazily on the driver thread — the
     # only thread that ever calls the insert ladder (verify.py's contract).
     inserter = Inserter(clipboard, verifier=InsertVerifier())
+
+    def chosen_input_device() -> str | None:
+        # Spec §5's ranked auto-fallback, resolved fresh at each stream open so
+        # a device that came back since last time is picked up. An enumeration
+        # failure falls through to the system default (None).
+        return resolve_input_device(
+            config.audio_input_ranking, input_device_names(),
+            current=config.audio_input_device,
+        )
     stt_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="billytalk-stt")
 
     hook_holder: list[HookThread] = []
@@ -122,7 +133,7 @@ def main() -> int:
         dictionary=dictionary,
         clipboard=clipboard,
         inserter=inserter,
-        capture_factory=lambda **kw: CaptureSession(device=config.audio_input_device, **kw),
+        capture_factory=lambda **kw: CaptureSession(device=chosen_input_device(), **kw),
         capture_target=capture_target,
         play_cue=play_cue,
         notify=_console_notify,
@@ -307,6 +318,30 @@ def main() -> int:
     else:
         log.warning("hidden window failed to start; continuing without a tray")
 
+    # -- power, session and device messages on the hidden window (spec §3/§5) -- #
+    _STREAM_PHASES = frozenset({"Initialized", "Recording"})
+
+    def reload_devices() -> None:
+        # Driver thread: refresh PortAudio's frozen list, then tell the
+        # interface. The stream is provably closed — SystemEvents gated it.
+        reload_portaudio()
+        server.send({
+            "type": "device_list_changed",
+            "inputs": input_device_names(),
+            "outputs": [],
+        })
+
+    system_events = SystemEvents(
+        post_event=driver.post,
+        post_job=driver.post_job,
+        stream_open=lambda: driver.state.phase.name in _STREAM_PHASES,
+        reload_devices=reload_devices,
+        reinstall_hook=deps.request_hook_reinstall,
+        reset_watchdog=lambda: hook_holder[0].note_probe_sent() if hook_holder else None,
+    )
+    if window.hwnd:
+        system_events.register(window)
+
     def publish(state) -> None:  # driver thread; display only
         plan = plan_publish(
             phase_name=state.phase.name,
@@ -322,6 +357,10 @@ def main() -> int:
                            tooltip=tray_tooltip_for(plan.tray_state, waiting=waiting))
         if plan.raise_ui:
             ui_host.ensure_running()
+        # A device change that arrived mid-recording runs its deferred reload
+        # the moment the stream is closed again (spec §5).
+        if state.phase.name not in _STREAM_PHASES:
+            system_events.on_idle()
         server.send(plan.frame())
 
     deps.publish_state = publish

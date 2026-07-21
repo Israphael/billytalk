@@ -222,3 +222,39 @@ def test_zz_portaudio_reload_survives_with_no_stream_open() -> None:
 
     reload_portaudio()
     assert len(sd.query_devices()) >= 0  # the library is alive and answering
+
+
+# --------------------------------------------------------------------------- #
+# ranked microphone with auto-fallback (spec §5) — pure
+# --------------------------------------------------------------------------- #
+
+
+def test_resolve_input_prefers_the_first_available_ranked_name() -> None:
+    from billytalk.core.audio.devices import resolve_input_device
+
+    available = ["Realtek Array", "USB Mic"]
+    ranking = ["Razer BlackShark V2", "USB Mic", "Realtek Array"]
+    # The top preference is unplugged; the next one present wins (auto-fallback).
+    assert resolve_input_device(ranking, available) == "USB Mic"
+
+
+def test_resolve_input_keeps_the_current_pick_when_ranking_is_silent() -> None:
+    from billytalk.core.audio.devices import resolve_input_device
+
+    available = ["USB Mic", "Realtek Array"]
+    assert resolve_input_device([], available, current="Realtek Array") == "Realtek Array"
+
+
+def test_resolve_input_never_returns_a_vanished_device() -> None:
+    from billytalk.core.audio.devices import resolve_input_device
+
+    available = ["USB Mic"]
+    # ranking and current both name a device that is gone → system default.
+    got = resolve_input_device(["Razer"], available, current="Realtek Array")
+    assert got is None
+
+
+def test_resolve_input_falls_back_to_the_default_when_nothing_matches() -> None:
+    from billytalk.core.audio.devices import resolve_input_device
+
+    assert resolve_input_device(["A", "B"], ["C", "D"]) is None

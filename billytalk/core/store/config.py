@@ -55,6 +55,11 @@ class Config:
     max_hold_ms: int = 5 * 60 * 1000
     max_clip_ms: int = 20 * 60 * 1000
     audio_input_device: str | None = None
+    audio_input_ranking: list[str] = field(default_factory=list)
+    """Spec §5's ranked microphone list with auto-fallback: names in priority
+    order, matched against what PortAudio actually reports. Empty means «system
+    default». Additive within schema_version 1 — an old config without the key
+    loads with this default, harmless in both drift directions."""
     provider_id: str = "groq"
     groq_model: str = "whisper-large-v3-turbo"
     polish_enabled: bool = False
