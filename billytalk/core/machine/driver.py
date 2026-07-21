@@ -214,6 +214,13 @@ class _RetryItem:
     attempts: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class _ServiceJob:
+    """A callable riding the event queue onto the driver thread (post_job)."""
+
+    fn: Callable[[], None]
+
+
 _SEQ_EVENTS = (TranscribeOk, ClipEmpty, NetworkError, InsertOk, InsertFailed)
 
 
@@ -225,7 +232,7 @@ class Driver:
         self.deps = deps
         self.state: State = initial_state()
         self.scheduler = Scheduler()
-        self.events: queue.Queue[Event] = queue.Queue()
+        self.events: queue.Queue[Event | _ServiceJob] = queue.Queue()
         self._dictations: dict[int, _DictationState] = {}
         self._pending_target: Any = None
         self._suppress = True
@@ -239,6 +246,22 @@ class Driver:
     def post(self, event: Event) -> None:
         """Thread-safe entry: workers and hooks put, the driver thread pops."""
         self.events.put(event)
+
+    def post_job(self, fn: Callable[[], None]) -> None:
+        """Thread-safe: run ``fn`` on the driver thread, serialised with
+        delivery. This lane exists for the UI verbs that touch driver-thread
+        property — the store connection, the clipboard, the inserter — and it
+        IS spec §8's «операция с буфером — глобальный мьютекс»: one thread,
+        so a history insert can never interleave with a delivery. The machine
+        never sees these; :meth:`dispatch` runs them and returns."""
+        self.events.put(_ServiceJob(fn))
+
+    @property
+    def last_target(self) -> Any:
+        """The target captured at the most recent press (spec §10: «вставка из
+        истории исполняется ядром... у него сохранён целевой HWND»). ``None``
+        until the first dictation of this run."""
+        return self._pending_target
 
     def on_hook_event(self, hook_event: Any) -> None:
         """Adapter for ``HookThread``. Runs on the hook thread — translation
@@ -286,6 +309,15 @@ class Driver:
 
     def dispatch(self, event: Event) -> None:
         """One machine step plus its consequences. Driver thread only."""
+        if isinstance(event, _ServiceJob):
+            # A driver-thread errand, not a machine event: the machine's step
+            # never sees it (машину не переписываем). Its failure must not
+            # kill the loop — the job answers its own requester.
+            try:
+                event.fn()
+            except Exception:
+                log.exception("service job failed")
+            return
         if self._is_stale(event):
             return
         if isinstance(event, TranscribeOk):

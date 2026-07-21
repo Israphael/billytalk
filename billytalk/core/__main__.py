@@ -35,6 +35,7 @@ from .logging_setup import configure_logging
 from .machine.driver import Driver, DriverDeps
 from .machine.effects import ErrorCode
 from .machine.events import Exit, HookDied
+from .services import UiServices
 from .stt.groq import GroqProvider
 from .store import CleanupGate, HistoryStore, connect, ensure_schema, load_config
 from .store import secrets
@@ -154,10 +155,43 @@ def main() -> int:
         post=driver.post,
         send=lambda frame: server.send(frame),
     )
+
+    def apply_config_to_deps() -> None:
+        # Driver thread (via post_job): refresh the deps copies a set_config
+        # may have moved. The closures that read `config` live are already
+        # current — these are the fields DriverDeps captured by value.
+        deps.language = config.language
+        deps.max_hold_ms = config.max_hold_ms
+        deps.retention_minutes = config.retention_minutes
+
+    def has_groq_key() -> bool:
+        try:
+            return secrets.read_secret(secrets.TARGET_GROQ) is not None
+        except secrets.SecretUndecodable:
+            return False  # presence check only; the loud path is groq_key()
+
+    services = UiServices(
+        config=config,
+        config_path=roaming / "config.json",
+        db_path=local / "history.db",
+        post_job=driver.post_job,
+        send=lambda frame: server.send(frame),
+        store_get=store.get,
+        clipboard_write=clipboard.write,
+        insert=inserter.insert,
+        last_target=lambda: driver.last_target,
+        play_cue=play_cue,
+        swap_dictionary=lambda d: setattr(deps, "dictionary", d),
+        save_dictionary=lambda d: d.save_to_db(conn),
+        current_dictionary=lambda: deps.dictionary,
+        apply_config_to_deps=apply_config_to_deps,
+        has_groq_key=has_groq_key,
+    )
     router = UiMessageRouter(
         post=driver.post,
         dictation_enabled=lambda: driver.state.enabled,
         menu=bridge,
+        services=services,
     )
 
     def on_ui_connect() -> None:

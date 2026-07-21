@@ -26,6 +26,7 @@ from typing import Any, Final
 
 from .ipc.protocol import menu_command, reply, state_changed
 from .machine.events import Event, Exit, SetDictationEnabled
+from .services import SERVICE_VERBS, UiServices
 from .tray import TrayMenuItem, TrayState, menu_items_from_wire, tray_state_for
 
 __all__ = [
@@ -126,11 +127,14 @@ class UiMessageRouter:
     """UI → core message routing, on the server's read thread.
 
     Like the tray does from the window thread, it only posts events and swaps
-    the menu model — nothing here blocks or touches the store. The server has
-    already rejected types outside the protocol's ``UI_TO_CORE`` set, so every
-    message that arrives is legal; a legal verb this milestone does not serve
-    yet is answered ``unimplemented`` when the request carried an ``id``, so
-    the interface waits on a reply, never on a silence (OPEN-QUESTIONS §21).
+    the menu model — nothing here blocks the read thread beyond a read-only
+    SQLite page (the services' own discipline). The server has already
+    rejected types outside the protocol's ``UI_TO_CORE`` set, so every message
+    that arrives is legal; the config/history/dictionary verbs go to
+    :class:`~billytalk.core.services.UiServices`, and a legal verb nothing
+    serves yet is answered ``unimplemented`` when the request carried an
+    ``id``, so the interface waits on a reply, never on a silence
+    (OPEN-QUESTIONS §21).
     """
 
     def __init__(
@@ -139,10 +143,12 @@ class UiMessageRouter:
         post: Callable[[Event], None],
         dictation_enabled: Callable[[], bool],
         menu: TrayMenuBridge,
+        services: UiServices | None = None,
     ) -> None:
         self._post = post
         self._dictation_enabled = dictation_enabled
         self._menu = menu
+        self._services = services
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         kind = message.get("type")
@@ -155,6 +161,8 @@ class UiMessageRouter:
             self._post(Exit())
         elif kind == "menu_model":
             self._menu.set_model(message.get("items"))
+        elif isinstance(kind, str) and kind in SERVICE_VERBS and self._services is not None:
+            return self._services.handle(kind, message)
         else:
             request_id = message.get("id")
             if isinstance(request_id, int):

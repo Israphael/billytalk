@@ -268,6 +268,12 @@ class HistoryStore:
         ).fetchall()
         return [PendingRow(*row) for row in rows]
 
+    def get(self, row_id: int) -> sqlite3.Row | None:
+        """One row by id — the history-insert verb's lookup (spec §10)."""
+        return self._conn.execute(
+            "SELECT * FROM history WHERE id = ?", (row_id,)
+        ).fetchone()
+
     def count_waiting(self) -> int:
         """How many rows wait for the network — the ``N`` in spec §3's offline
         tooltip «N записей ждут связи». The same non-terminal statuses the
