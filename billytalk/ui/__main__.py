@@ -24,8 +24,16 @@ import wx
 
 from ..core.logging_setup import configure_logging
 from .ipc.client import IpcClient
+from .overlay import Plashka, PlashkaLook
 
 log = logging.getLogger("billytalk.ui.main")
+
+# The plashka look each display state calls for; anything else hides it. The
+# keys are the TrayState values the core sends in state_changed.
+_LOOK_FOR = {
+    "recording": PlashkaLook.RECORDING,
+    "transcribing": PlashkaLook.TRANSCRIBING,
+}
 
 
 def _parse_args(argv: list[str]) -> tuple[str, str | None]:
@@ -38,12 +46,6 @@ def _parse_args(argv: list[str]) -> tuple[str, str | None]:
     return name, image
 
 
-def _dispatch(message: dict[str, Any]) -> None:
-    """GUI thread. Payloads are never logged (spec §13) — the type only. Later
-    steps route ``state_changed`` to the plashka from here."""
-    log.info("core message %s", message.get("type"))
-
-
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
     name, expected_image = _parse_args(argv)
@@ -51,12 +53,25 @@ def main(argv: list[str] | None = None) -> int:
     local = Path(os.environ["LOCALAPPDATA"]) / "BillyTalk"
     configure_logging(local / "logs", filename="ui.log")
 
-    # wx.App must exist before any wx.CallAfter can queue onto its loop.
+    # wx.App must exist before any wx.CallAfter can queue onto its loop, and
+    # before the plashka's window can be created.
     app = wx.App()
+    plashka = Plashka()
+
+    def dispatch(message: dict[str, Any]) -> None:
+        """GUI thread. Payloads are never logged (spec §13) — the type only."""
+        kind = message.get("type")
+        log.info("core message %s", kind)
+        if kind == "state_changed":
+            look = _LOOK_FOR.get(message.get("state"))
+            if look is not None:
+                plashka.show(look)
+            else:
+                plashka.hide()
 
     client = IpcClient(
         name,
-        on_message=lambda m: wx.CallAfter(_dispatch, m),   # reader thread → GUI
+        on_message=lambda m: wx.CallAfter(dispatch, m),   # reader thread → GUI
         expected_image=expected_image,
         on_disconnect=lambda: wx.CallAfter(app.ExitMainLoop),  # core gone → quit
     )
@@ -64,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         client.connect()
     except Exception:
         log.exception("could not connect to the core")
+        plashka.destroy()
         return 2
     log.info("connected to core %s", client.core_version)
 
@@ -71,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         app.MainLoop()
     finally:
         client.close()
+        plashka.destroy()
     return 0
 
 
