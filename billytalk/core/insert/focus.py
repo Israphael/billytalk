@@ -22,7 +22,13 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Final
 
-__all__ = ["Target", "capture_target", "is_still_focused", "try_restore_focus"]
+__all__ = [
+    "Target",
+    "capture_target",
+    "current_focus_hwnd",
+    "is_still_focused",
+    "try_restore_focus",
+]
 
 _user32 = ct.WinDLL("user32", use_last_error=True)
 _kernel32 = ct.WinDLL("kernel32", use_last_error=True)
@@ -86,6 +92,26 @@ class Target:
     focus_class: str | None
     secure: bool
     elevated: bool
+
+
+def current_focus_hwnd() -> int | None:
+    """The control focused *right now* in the foreground thread, or ``None``
+    when it cannot be read (no foreground window, a console, access denied).
+
+    Spec §8: the press-time capture is **compared** before the paste — the
+    window check alone misses a click into another field of the same form,
+    where the chord would land in the wrong control and verification would
+    read the old one (cycle-2 M1 review, the confirmed high finding).
+    """
+    foreground = _user32.GetForegroundWindow()
+    if not foreground:
+        return None
+    tid = _user32.GetWindowThreadProcessId(foreground, None)
+    info = _GUITHREADINFO()
+    info.cbSize = ct.sizeof(_GUITHREADINFO)
+    if not _user32.GetGUIThreadInfo(tid, ct.byref(info)):
+        return None
+    return int(info.hwndFocus or 0) or None
 
 
 def _class_name(hwnd: int | None) -> str | None:

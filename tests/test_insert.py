@@ -44,6 +44,7 @@ def _inserter(
     clipboard: StubClipboard | None = None,
     focused: bool = True,
     restore_ok: bool = False,
+    live_control: int | None = 0x222,
 ) -> tuple[Inserter, StubClipboard, list[str]]:
     clip = clipboard or StubClipboard()
     calls: list[str] = []
@@ -62,6 +63,7 @@ def _inserter(
         any_modifier_down=fake.any_modifier_down,
         focused=focused_fn,
         restore_focus=restore_fn,
+        focused_control=lambda: live_control,
         clock=fake.clock,
         sleep=fake.sleep,
     )
@@ -232,7 +234,7 @@ class ScriptVerifier:
 
 
 def _verified_inserter(
-    fake: FakeInput, outcome: VerifyOutcome
+    fake: FakeInput, outcome: VerifyOutcome, *, live_control: int | None = 0x222
 ) -> tuple[Inserter, ScriptVerifier]:
     events: list[str] = []
     verifier = ScriptVerifier(outcome, events)
@@ -243,6 +245,7 @@ def _verified_inserter(
         any_modifier_down=fake.any_modifier_down,
         focused=lambda _t: True,
         restore_focus=lambda _t: False,
+        focused_control=lambda: live_control,
         clock=fake.clock,
         sleep=fake.sleep,
     )
@@ -294,9 +297,70 @@ def test_no_text_skips_verification_entirely() -> None:
     assert verifier.events == ["chord"], "no baseline, no verify — just the paste"
 
 
-def test_focus_hwnd_falls_back_to_the_top_window() -> None:
+def test_unreadable_live_control_falls_back_to_the_top_window() -> None:
     fake = FakeInput()
-    inserter, verifier = _verified_inserter(fake, VerifyOutcome.INSERTED)
+    inserter, verifier = _verified_inserter(
+        fake, VerifyOutcome.INSERTED, live_control=None
+    )
     inserter.insert(_target(focus_hwnd=None), SNAPSHOT, "текст")
 
     assert verifier.baseline_hwnds == [0x111]
+
+
+# --------------------------------------------------------------------------- #
+# the press-time control is COMPARED before the paste (spec §8; M1 review)
+# --------------------------------------------------------------------------- #
+
+
+def test_control_moved_since_press_goes_loud_without_pasting() -> None:
+    """The user clicked another field of the same window during transcription:
+    the chord would land there (Wispr Flow complaint №2) and verification
+    would read the old control and cry paste_failed over a landed paste —
+    the M1 review's high finding. No chord, no verify, loud focus_lost."""
+    fake = FakeInput()
+    inserter, verifier = _verified_inserter(
+        fake, VerifyOutcome.INSERTED, live_control=0x333  # ≠ captured 0x222
+    )
+    report = inserter.insert(_target(), SNAPSHOT, "текст")
+
+    assert not report.ok and report.failure is not None
+    assert report.failure.code is ErrorCode.FOCUS_LOST
+    assert report.failure.status is DeliveryStatus.FOCUS_LOST
+    assert fake.chords == [], "never paste into a field the user moved out of"
+    assert verifier.events == [], "nothing to verify — nothing was pasted"
+
+
+def test_control_check_protects_even_without_a_verifier() -> None:
+    fake = FakeInput()
+    inserter, _, _ = _inserter(fake, live_control=0x333)
+    report = inserter.insert(_target(), SNAPSHOT)
+
+    assert not report.ok and report.failure is not None
+    assert report.failure.status is DeliveryStatus.FOCUS_LOST
+    assert fake.chords == []
+
+
+def test_verification_reads_the_live_control_the_chord_lands_in() -> None:
+    fake = FakeInput()
+    inserter, verifier = _verified_inserter(
+        fake, VerifyOutcome.INSERTED, live_control=0x222
+    )
+    inserter.insert(_target(), SNAPSHOT, "текст")
+
+    assert verifier.baseline_hwnds == [0x222]
+    assert verifier.verified == [(0x222, "текст")]
+
+
+def test_uncomparable_capture_still_pastes() -> None:
+    """No press-time control was captured (Chromium-style single-hwnd windows
+    land here): there is nothing to compare, and refusing would break every
+    paste into such targets. The chord goes; verification uses the live one."""
+    fake = FakeInput()
+    inserter, verifier = _verified_inserter(
+        fake, VerifyOutcome.INSERTED, live_control=0x333
+    )
+    report = inserter.insert(_target(focus_hwnd=None), SNAPSHOT, "текст")
+
+    assert report.ok
+    assert fake.chords == [PasteChord.CTRL_V]
+    assert verifier.baseline_hwnds == [0x333]

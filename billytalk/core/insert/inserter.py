@@ -42,7 +42,7 @@ from ..hooks.lowlevel import SELF_MARK  # the loop-guard mark, shared project-wi
 from ..machine.effects import DeliveryStatus, ErrorCode
 from .apprules import AppRule, PasteChord, rule_for
 from .clipboard import Clipboard, ClipboardSnapshot
-from .focus import Target, is_still_focused, try_restore_focus
+from .focus import Target, current_focus_hwnd, is_still_focused, try_restore_focus
 from .verify import InsertVerifier, VerifyOutcome
 
 __all__ = ["InsertFailure", "InsertReport", "Inserter", "RESTORE_DELAY_MS", "prepare_text"]
@@ -152,6 +152,7 @@ class Inserter:
         any_modifier_down: Callable[[], bool] = modifiers_down,
         focused: Callable[[Target], bool] = is_still_focused,
         restore_focus: Callable[[Target], bool] = try_restore_focus,
+        focused_control: Callable[[], int | None] = current_focus_hwnd,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -161,6 +162,7 @@ class Inserter:
         self._any_modifier_down = any_modifier_down
         self._focused = focused
         self._restore_focus = restore_focus
+        self._focused_control = focused_control
         self._clock = clock
         self._sleep = sleep
 
@@ -196,6 +198,27 @@ class Inserter:
                     ),
                 )
 
+        # Spec §8: «HWND и контрол в фокусе захватываются в момент нажатия.
+        # Перед вставкой сверяются.» The window survived the check above, but
+        # the focused CONTROL may have moved — the user clicked another field
+        # of the same form during transcription. Pasting would land in the
+        # wrong field (Wispr Flow complaint №2), and verification would read
+        # the press-time control and cry paste_failed over a landed paste
+        # (M1 review, the confirmed high finding). Loud, never blind.
+        live_control = self._focused_control()
+        if (
+            live_control is not None
+            and target.focus_hwnd
+            and live_control != target.focus_hwnd
+        ):
+            return InsertReport(
+                ok=False,
+                failure=InsertFailure(
+                    ErrorCode.FOCUS_LOST, DeliveryStatus.FOCUS_LOST,
+                    "focused control changed since press",
+                ),
+            )
+
         if not self._wait_modifiers_released():
             return InsertReport(
                 ok=False,
@@ -225,8 +248,10 @@ class Inserter:
 
         # The baseline must precede the chord: afterwards the pre-paste caret
         # position is gone. A None baseline is already the verify_impossible
-        # verdict and rides through verify() unchanged.
-        verify_hwnd = target.focus_hwnd or target.hwnd
+        # verdict and rides through verify() unchanged. Verified against the
+        # control that is focused NOW — the one the chord actually lands in;
+        # unreadable → the top window, whose reader finds the document itself.
+        verify_hwnd = live_control or target.hwnd
         baseline = self._verifier.baseline(verify_hwnd)
         self._send_chord(rule.paste)
         outcome = self._verifier.verify(verify_hwnd, text, baseline)
