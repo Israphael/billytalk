@@ -168,13 +168,29 @@ class HotkeyCapture:
             return
         if not _capturable(code):
             return  # swallowed by the hook; keep waiting for a real key
-        self._apply_binding(code)
-        self._deactivate()
-        self._send({
-            "type": "hotkey_captured",
-            "codes": [code],
-            "display": display_for_code(code),
-        })
+        # apply_binding writes config.json — a real OSError path (disk full,
+        # OneDrive locking the roaming file). If it raised, _deactivate would
+        # be skipped and capture mode would stay on, swallowing every key until
+        # the 30 s guard. Deactivate in finally, unconditionally: leaving the
+        # keyboard dead is far worse than a binding that did not persist.
+        applied = False
+        try:
+            self._apply_binding(code)
+            applied = True
+        except Exception:
+            log.exception("applying the captured binding failed")
+        finally:
+            self._deactivate()
+        if applied:
+            self._send({
+                "type": "hotkey_captured",
+                "codes": [code],
+                "display": display_for_code(code),
+            })
+        else:
+            # The binding did not stick — tell the interface it was not
+            # captured, so it does not show a key the core is not bound to.
+            self._send({"type": "hotkey_captured", "codes": [], "display": ""})
 
     def _timeout(self, generation: int) -> None:
         if self._action is None or generation != self._generation:

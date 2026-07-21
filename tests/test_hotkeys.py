@@ -157,6 +157,29 @@ def test_stop_verb_ends_capture(world: CaptureWorld) -> None:
     assert world.sent[-1] == {"type": "reply", "id": 12, "result": {}}
 
 
+def test_a_failing_apply_still_ends_capture_and_reports_no_key(world: CaptureWorld) -> None:
+    """M3 review, medium: if apply_binding raises (save_config hit a full disk
+    or a locked roaming file), capture mode must STILL be released — otherwise
+    the keyboard is swallowed until the 30 s guard. And the interface is told
+    nothing was captured, not a key the core never bound."""
+    def boom(_code: int) -> None:
+        raise OSError("config.json is locked")
+
+    world.capture = HotkeyCapture(
+        post_job=lambda fn: fn(),
+        schedule_at=lambda when, fn: world.timers.append((when, fn)),
+        now_ms=lambda: world.now,
+        begin_capture=lambda: world.capturing.append(True),
+        end_capture=lambda: world.capturing.append(False),
+        apply_binding=boom,
+        send=lambda frame: (world.sent.append(frame), True)[-1],
+    )
+    world.capture.start(13, "ptt")
+    world.capture.on_capture_event("capture", 4099)
+    assert world.capturing == [True, False], "a failed save must not strand capture mode"
+    assert world.sent[-1] == {"type": "hotkey_captured", "codes": [], "display": ""}
+
+
 # --------------------------------------------------------------------------- #
 # HotkeyActions
 # --------------------------------------------------------------------------- #
@@ -276,6 +299,27 @@ def test_paste_failure_goes_loud_with_the_clipboard_cue(acts: ActionsWorld) -> N
 def test_empty_history_answers_the_reject_cue(acts: ActionsWorld) -> None:
     acts.actions.on_chord(CHORD_PASTE_VK)
     assert acts.cues == [Cue.REJECT] and acts.clip == []
+
+
+def test_a_raising_clipboard_write_still_sounds_the_error_cue(acts: ActionsWorld) -> None:
+    """M3 review, medium (fixed in M4): clipboard.write raises when the board
+    is locked by another app; a chord the user pressed must never fail in
+    silence (spec §11)."""
+    acts.add_row(text="важное")
+    acts.actions._clipboard_write = _raise_locked  # type: ignore[assignment]
+    acts.actions.on_chord(CHORD_PASTE_VK)
+    assert acts.cues == [Cue.ERROR], "a locked clipboard is heard, not swallowed"
+
+
+def test_a_raising_copy_also_sounds_the_error_cue(acts: ActionsWorld) -> None:
+    acts.add_row(text="важное")
+    acts.actions._clipboard_write = _raise_locked  # type: ignore[assignment]
+    acts.actions.on_chord(CHORD_COPY_VK)
+    assert acts.cues == [Cue.ERROR]
+
+
+def _raise_locked(_text: str) -> Any:
+    raise RuntimeError("clipboard owned by another app")
 
 
 def test_copy_last_fills_the_clipboard_and_says_so(acts: ActionsWorld) -> None:

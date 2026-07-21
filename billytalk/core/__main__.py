@@ -185,8 +185,18 @@ def main() -> int:
     def apply_ptt_binding(code: int) -> None:
         # Driver thread, inside the capture job: live for the hook the moment
         # end_capture re-syncs the snapshot (мастер шага 3: назначается само).
+        # Atomic against a failed write: persist first, mutate live state only
+        # if it stuck — otherwise config and the hook's bound set would drift
+        # apart (config.ptt_code changed, bound_codes not) and the shown key
+        # would not be the acted one (M3 review). The raise propagates to the
+        # capture job, which deactivates in finally regardless.
+        previous = config.ptt_code
         config.ptt_code = code
-        save_config(roaming / "config.json", config)
+        try:
+            save_config(roaming / "config.json", config)
+        except Exception:
+            config.ptt_code = previous
+            raise
         deps.bound_codes = frozenset({code})
 
     hotkey_capture = HotkeyCapture(
