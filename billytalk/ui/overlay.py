@@ -135,6 +135,11 @@ class Plashka:
     def show(self, look: PlashkaLook) -> None:
         """Display the pill with ``look``, without ever taking the foreground."""
         self._look = look
+        # Re-place every time: the display resolution may have changed since the
+        # frame was built (docking, a projector), and a pill positioned once in
+        # __init__ would silently fall off-screen — the very "silent 400 ms →
+        # press again" absence spec §11 exists to prevent (cycle-2 review).
+        self._position()
         self._frame.Refresh()
         self._frame.Update()
         _user32.ShowWindow(self._hwnd, _SW_SHOWNOACTIVATE)  # never frame.Show()

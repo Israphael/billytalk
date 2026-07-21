@@ -175,12 +175,31 @@ def main() -> int:
             ui_menu[0] = items or None
         return None
 
+    def on_ui_connect():
+        # Push the current display state to a freshly connected interface so its
+        # menu check mark and plashka are right at once — a stopped/idle core
+        # emits no state_changed on its own, so the interface would otherwise
+        # sit on its enabled=True assumption forever (cycle-2 review, finding 2).
+        # Read thread: driver.state is a frozen record and gate.offline a bool,
+        # the same safe cross-thread reads menu_model makes. No store touch —
+        # count_waiting belongs to the driver thread's sqlite connection, so the
+        # offline count is left to the next real publish.
+        st = driver.state
+        tstate = tray_state_for(
+            phase_name=st.phase.name, enabled=st.enabled,
+            offline=gate.offline, queue_len=len(st.queue),
+        )
+        server.send(state_changed(tstate.value, queue_len=len(st.queue)))
+
     def on_ui_disconnect():
         # A dead interface falls back to the core's own menu (OQ §22). This is
         # also where hotkey capture releases in milestone 3 (spec §14).
         ui_menu[0] = None
 
-    server = IpcServer(channel_name, handler=ipc_handler, on_disconnect=on_ui_disconnect)
+    server = IpcServer(
+        channel_name, handler=ipc_handler,
+        on_connect=on_ui_connect, on_disconnect=on_ui_disconnect,
+    )
     try:
         server.start()
     except PipeBusy:
@@ -230,12 +249,21 @@ def main() -> int:
 
     # -- tray (spec §11; OPEN-QUESTIONS §22: the icon lives in the core) --- #
     CMD_TOGGLE, CMD_EXIT = 102, 109
+    # Which model the open menu was built from, snapshotted when it is served so
+    # a click routes the way the shown menu expects. TrackPopupMenuEx blocks
+    # while the user reads, and ui_menu[0] can flip under it (the UI boots via
+    # §25's ensure_running, or dies mid-open) — and the two command namespaces
+    # (fallback 102/109 vs UI 201–209) are disjoint, so re-reading the cache at
+    # click time drops the click (cycle-2 review, finding 1). Window thread only,
+    # so a plain cell is race-free.
+    served_from_ui = [False]
 
     def menu_model() -> tuple[TrayMenuItem, ...]:
         # Window thread. Opening the menu is a demand that raises the interface
         # too (§25); once it has sent its model, that is what we show.
         ui_host.ensure_running()
         ui = ui_menu[0]
+        served_from_ui[0] = ui is not None
         if ui is not None:
             return ui
         # Dead-interface minimum (OQ §22): enough to toggle and quit. driver.state
@@ -247,10 +275,11 @@ def main() -> int:
         )
 
     def on_tray_command(command: int) -> None:
-        # When the interface owns the menu it owns the click: forward it and let
-        # the UI decide (it answers with toggle_dictation / shutdown / opening a
-        # window). Only the dead-interface fallback is handled here directly.
-        if ui_menu[0] is not None:
+        # Route by the model that was actually shown, not by re-reading the cache
+        # (which may have flipped during the blocking menu). When the interface
+        # owns the menu it owns the click — forward it and let the UI answer
+        # (toggle_dictation / shutdown / a window).
+        if served_from_ui[0]:
             server.send(menu_command(command))
             return
         if command == CMD_TOGGLE:
