@@ -113,8 +113,7 @@ STRINGS: Final[dict[str, str]] = {
     "settings.language": "Язык диктовки",
     "settings.language.hint": "Определяется явно, не автоматически",
     "settings.key": "Ключ API",
-    "settings.key.hint":
-        "Хранится в диспетчере учётных данных Windows, в файлы не записывается",
+    "settings.key.hint": "Диспетчер учётных данных Windows, не в файлах",
     "settings.key.saved": "Сохранён",
     "settings.key.missing": "Не сохранён",
     "settings.key.replace": "Заменить…",

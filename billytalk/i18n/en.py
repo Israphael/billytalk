@@ -111,7 +111,7 @@ STRINGS: Final[dict[str, str]] = {
     "settings.language": "Dictation language",
     "settings.language.hint": "Set explicitly, not detected",
     "settings.key": "API key",
-    "settings.key.hint": "Kept in the Windows Credential Manager, never written to a file",
+    "settings.key.hint": "Windows Credential Manager, never a file",
     "settings.key.saved": "Saved",
     "settings.key.missing": "Not saved",
     "settings.key.replace": "Replace…",

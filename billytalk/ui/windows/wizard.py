@@ -105,7 +105,7 @@ class _KeyForm(wx.Panel):
         row.Add(self._save, 0)
         sizer.Add(row, 0, wx.EXPAND | wx.BOTTOM, 8)
 
-        self.status = wx.StaticText(self, label="")
+        self.status = _wrapped(self, "")
         sizer.Add(self.status, 0, wx.BOTTOM, 8)
         privacy = _wrapped(self, t("wizard.key.privacy"))
         privacy.SetForegroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_GRAYTEXT))
@@ -114,21 +114,21 @@ class _KeyForm(wx.Panel):
 
     def show_stored(self, stored: bool) -> None:
         if stored:
-            self.status.SetLabel(t("wizard.key.stored"))
+            _relabel(self.status, t("wizard.key.stored"))
             self.accepted = True
 
     def _on_save(self, _event: wx.CommandEvent) -> None:
         key = self._field.GetValue().strip()
         if not key:
-            self.status.SetLabel(t("wizard.key.empty"))
+            _relabel(self.status, t("wizard.key.empty"))
             return
         self._save.Disable()
-        self.status.SetLabel(t("wizard.key.checking"))
+        _relabel(self.status, t("wizard.key.checking"))
 
         def stored(frame: dict[str, Any]) -> None:
             if "error" in frame:
                 self._save.Enable()
-                self.status.SetLabel(t("wizard.key.failed"))
+                _relabel(self.status, t("wizard.key.failed"))
                 return
             # Clear the field the moment the core owns the key: nothing is
             # served by leaving it on screen.
@@ -138,11 +138,11 @@ class _KeyForm(wx.Panel):
         def checked(frame: dict[str, Any]) -> None:
             self._save.Enable()
             if "error" in frame:
-                self.status.SetLabel(t("wizard.key.network"))
+                _relabel(self.status, t("wizard.key.network"))
                 return
             status = frame["result"].get("status")
             self.accepted = status in ("ok", "network")
-            self.status.SetLabel({
+            _relabel(self.status, {
                 "ok": t("wizard.key.ok"),
                 "invalid": t("wizard.key.invalid"),
                 "network": t("wizard.key.network"),
@@ -290,14 +290,10 @@ class WizardFrame(wx.Frame):
         self._language.SetSelection(1 if effective == "en" else 0)
         self._ui_language.SetSelection(1 if effective == "en" else 0)
         code = config.get("ptt_code")
-        self._hotkey_label.SetLabel(
-            t("wizard.hotkey.current",
-              key=binding_label(code) if isinstance(code, int) else t("common.dash"))
-        )
-        self._test_body.SetLabel(
-            t("wizard.test.body",
-              key=binding_label(code) if isinstance(code, int) else t("common.dash"))
-        )
+        key = binding_label(code) if isinstance(code, int) else t("common.dash")
+        _relabel(self._hotkey_label, t("wizard.hotkey.current", key=key))
+        _relabel(self._test_body, t("wizard.test.body", key=key))
+        self.Layout()
 
     def _on_ui_language(self, event: wx.CommandEvent) -> None:
         choice = event.GetEventObject()
@@ -440,19 +436,18 @@ class WizardFrame(wx.Frame):
 
     def _on_mic_check(self, _event: wx.CommandEvent) -> None:
         self._mic_button.Disable()
-        self._mic_status.SetLabel(t("settings.mic.checking"))
+        _relabel(self._mic_status, t("settings.mic.checking"))
 
         def answered(frame: dict[str, Any]) -> None:
             self._mic_button.Enable()
             if "error" in frame:
-                self._mic_status.SetLabel(t("wizard.mic.busy"))
+                _relabel(self._mic_status, t("wizard.mic.busy"))
                 return
             result = frame["result"]
             line = mic_line(result)
             self.state["mic_line"] = line
             self.state["mic_denied"] = result.get("code") == "mic_denied"
-            self._mic_status.SetLabel(line)
-            self._mic_status.Wrap(620)
+            _relabel(self._mic_status, line)
             # The privacy-settings button appears only where it is the answer.
             self._mic_settings.Show(bool(self.state["mic_denied"]))
             self.Layout()
@@ -516,8 +511,7 @@ class WizardFrame(wx.Frame):
         self.state["tested"] = True
         self._timer.Stop()
         self._c.on_state = None
-        self._test_status.SetLabel(t("wizard.test.got", text=text[:200]))
-        self._test_status.Wrap(620)
+        _relabel(self._test_status, t("wizard.test.got", text=text[:200]))
         self.Layout()
 
 
@@ -525,12 +519,27 @@ class WizardFrame(wx.Frame):
 # small builders
 # --------------------------------------------------------------------------- #
 
-def _wrapped(parent: wx.Window, text: str, width: int = 620) -> wx.StaticText:
+_WRAP: Final = 620
+
+
+def _wrapped(parent: wx.Window, text: str, width: int = _WRAP) -> wx.StaticText:
     """A paragraph that wraps. The wizard is the one place in the product with
     real prose in it, and an unwrapped StaticText simply runs off the window."""
     label = wx.StaticText(parent, label=text)
     label.Wrap(width)
     return label
+
+
+def _relabel(label: wx.StaticText, text: str) -> None:
+    """Replace a wrapped paragraph's text and wrap it again.
+
+    ``SetLabel`` discards the line breaks ``Wrap`` inserted, so a longer
+    sentence set later becomes one endless line clipped by the panel edge —
+    which is exactly how the live-test step lost the second half of its own
+    instruction. Every dynamic paragraph goes through here.
+    """
+    label.SetLabel(text)
+    label.Wrap(_WRAP)
 
 
 def _labelled(parent: wx.Window, label: str, control: wx.Window) -> wx.Sizer:
