@@ -31,6 +31,8 @@ SetCompressor /SOLID lzma
 !define REG_UNINST   "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
 
 Name "${APP_NAME}"
+; Внизу каждой страницы: имя продукта и версия вместо рекламы Nullsoft.
+BrandingText "${APP_NAME} ${APP_VERSION}"
 OutFile "..\dist\${APP_NAME}-Setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\${APP_NAME}"
 InstallDirRegKey HKCU "${REG_UNINST}" "InstallLocation"
@@ -51,6 +53,15 @@ VIAddVersionKey "CompanyName" "${APP_PUBLISHER}"
 !define MUI_ICON "billytalk.ico"
 !define MUI_UNICON "billytalk.ico"
 !define MUI_ABORTWARNING
+
+; Своя боковая картинка вместо дефолтной синей 8-битной с дизерингом — это
+; первое, что человек видит от программы (packaging/make_installer_art.py).
+; БЕЗ NOSTRETCH намеренно: на экране с масштабом 125% диалог крупнее, чем
+; базовые 164x314, и запрет растяжения оставлял белый провал под картинкой —
+; проверено скриншотом. Градиент с глифом растяжение на 17% переживает
+; незаметно, а дыра в интерфейсе заметна сразу.
+!define MUI_WELCOMEFINISHPAGE_BITMAP "welcome.bmp"
+!define MUI_UNWELCOMEFINISHPAGE_BITMAP "welcome.bmp"
 
 !define MUI_WELCOMEPAGE_TITLE "$(WELCOME_TITLE)"
 !define MUI_WELCOMEPAGE_TEXT "$(WELCOME_TEXT)"
@@ -82,10 +93,13 @@ LangString WELCOME_TEXT ${LANG_ENGLISH} \
 
 LangString FINISH_TITLE ${LANG_RUSSIAN} "BillyTalk установлен"
 LangString FINISH_TITLE ${LANG_ENGLISH} "BillyTalk is installed"
+; Коротко: у страницы завершения текстовая область фиксированной высоты, сразу
+; под ней чекбокс, и длинный текст обрезается на полуслове — это видно на
+; скриншоте, а в исходнике не видно никак.
 LangString FINISH_TEXT ${LANG_RUSSIAN} \
-  "Значок микрофона появится возле часов. При первом запуске откроется мастер — семь шагов, последний из них проверяет диктовку вживую.$\r$\n$\r$\nBillyTalk будет запускаться вместе с Windows. Это можно выключить в настройках или в Параметрах Windows."
+  "Значок микрофона появится возле часов, и BillyTalk будет запускаться вместе с Windows.$\r$\n$\r$\nПри первом запуске откроется мастер: семь шагов, последний проверяет диктовку вживую."
 LangString FINISH_TEXT ${LANG_ENGLISH} \
-  "The microphone icon appears next to the clock. On the first run a wizard opens — seven steps, the last of which tests dictation live.$\r$\n$\r$\nBillyTalk will start with Windows. You can turn that off in its settings or in Windows Settings."
+  "The microphone icon appears next to the clock, and BillyTalk will start with Windows.$\r$\n$\r$\nOn the first run a wizard opens: seven steps, the last one tests dictation live."
 LangString FINISH_RUN ${LANG_RUSSIAN} "Запустить BillyTalk"
 LangString FINISH_RUN ${LANG_ENGLISH} "Run BillyTalk"
 
@@ -200,7 +214,12 @@ Section "Uninstall"
   ; и молча стереть её при удалении программы значило бы решить за него.
   ; В тихом режиме (/S) вопроса нет и данные остаются — тихое удаление обязано
   ; быть консервативным.
-  IfSilent +2
+  ; Прыжок ПО МЕТКЕ, а не «+2»: относительное смещение считается от самой
+  ; IfSilent, поэтому +2 перескакивало бы MessageBox и приземлялось ровно на
+  ; RMDir — то есть тихое удаление стирало бы историю пользователя молча,
+  ; вместо того чтобы её сохранить. Поймано перечитыванием перед запуском
+  ; теста, который снёс бы настоящие данные на этой машине.
+  IfSilent skip_userdata
   MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "$(ASK_USERDATA)" IDNO skip_userdata
   RMDir /r "$LOCALAPPDATA\${APP_NAME}"
   RMDir /r "$APPDATA\${APP_NAME}"
