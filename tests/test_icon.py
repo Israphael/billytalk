@@ -75,3 +75,63 @@ def test_the_glyph_is_actually_drawn(size: int) -> None:
     assert whitish, "no white pixels: the microphone glyph is missing"
     corner = pixels[0]
     assert corner[3] < 128, "the rounded corner must be transparent"
+
+
+# --------------------------------------------------------------------------- #
+# the installer's sidebar (packaging/make_installer_art.py)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_committed_sidebar_matches_its_generator() -> None:
+    """Same rule as the icon: if this fails, run
+    ``python packaging/make_installer_art.py``."""
+    from make_installer_art import WELCOME_PATH, WELCOME_SIZE, _welcome_pixel, build_bmp
+
+    assert WELCOME_PATH.is_file(), "packaging/welcome.bmp is missing"
+    assert WELCOME_PATH.read_bytes() == build_bmp(*WELCOME_SIZE, _welcome_pixel)
+
+
+def test_the_sidebar_is_a_bmp_mui_can_actually_show() -> None:
+    """MUI takes a Windows bitmap and nothing else, at exactly 164x314 — and
+    the reason NSIS's own artwork is dithered is that it is 8-bit."""
+    from make_installer_art import WELCOME_PATH, WELCOME_SIZE
+
+    data = WELCOME_PATH.read_bytes()
+    assert data[:2] == b"BM"
+    file_size, _r1, _r2, offset = struct.unpack_from("<IHHI", data, 2)
+    assert file_size == len(data), "the header must describe the file it is in"
+    header_size, width, height, planes, bits = struct.unpack_from("<IiiHH", data, 14)
+    assert (header_size, planes, bits) == (40, 1, 24), "24-bit BITMAPINFOHEADER"
+    assert (width, height) == WELCOME_SIZE
+    stride = ((width * 3 + 3) // 4) * 4
+    assert len(data) - offset == stride * height, "rows pad to four bytes"
+
+
+def test_the_sidebar_carries_the_glyph_on_a_gradient() -> None:
+    """A flat rectangle, or one with no microphone on it, looks perfectly
+    healthy in a file listing and wrong on the screen."""
+    from make_installer_art import WELCOME_PATH, WELCOME_SIZE
+
+    data = WELCOME_PATH.read_bytes()
+    (offset,) = struct.unpack_from("<I", data, 10)
+    width, height = WELCOME_SIZE
+    stride = ((width * 3 + 3) // 4) * 4
+
+    def pixel(row: int, column: int) -> tuple[int, int, int]:
+        # BMP is bottom-up: row 0 of the image is the LAST row of the data.
+        start = offset + (height - 1 - row) * stride + column * 3
+        b, g, r = data[start:start + 3]
+        return r, g, b
+
+    top_left = pixel(2, 2)
+    bottom_left = pixel(height - 3, 2)
+    assert top_left != bottom_left, "the plate is a gradient, not a flat fill"
+    assert sum(top_left) > sum(bottom_left), "and it runs light to dark"
+
+    whitish = sum(
+        1
+        for row in range(0, height, 3)
+        for column in range(0, width, 3)
+        if min(pixel(row, column)) > 230
+    )
+    assert whitish > 50, "no white pixels: the microphone glyph is missing"
