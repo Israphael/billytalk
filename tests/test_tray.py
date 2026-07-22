@@ -27,7 +27,6 @@ from billytalk.core.tray import (
     _BITMAPINFOHEADER,
     _ICON_SIZE,
     _ICONINFO,
-    _TOOLTIPS,
     _build_menu,
     _draw_state_icon,
     menu_items_from_wire,
@@ -320,7 +319,7 @@ def test_offline_tooltip_carries_the_waiting_count() -> None:
     connection'. Other states keep their fixed text, no phantom number."""
     tip = tray_tooltip_for(TrayState.OFFLINE, waiting=3)
     assert "3" in tip and "связи" in tip
-    assert tray_tooltip_for(TrayState.IDLE, waiting=3) == _TOOLTIPS[TrayState.IDLE]
+    assert "3" not in tray_tooltip_for(TrayState.IDLE, waiting=3)
 
 
 def test_a_second_window_on_a_shared_class_keeps_its_own_wndproc() -> None:

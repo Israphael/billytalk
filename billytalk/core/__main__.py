@@ -17,18 +17,25 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from ctypes import wintypes
 from pathlib import Path
+from typing import Any, Final
 
 import win32api
 import win32process
 
-from .audio.capture import CaptureSession
+from ..i18n import set_language, t
+from .audio.capture import CaptureError, CaptureSession
 from .audio.cues import play_cue
 from .audio.encode import encode_flac
 from .audio.trim import trim_silence
 from .hooks.edges import HookSnapshot
 from .hooks.lowlevel import HookThread
 from .hooks.watchdog import HookWatchdog
-from .audio.devices import input_device_names, reload_portaudio, resolve_input_device
+from .audio.devices import (
+    default_input_device,
+    input_device_names,
+    reload_portaudio,
+    resolve_input_device,
+)
 from .insert.clipboard import Clipboard
 from .insert.focus import capture_target
 from .insert.inserter import Inserter
@@ -47,6 +54,7 @@ from .store import CleanupGate, HistoryStore, connect, ensure_schema, load_confi
 from .store import secrets
 from .text.dictionary import Dictionary
 from .tray import HiddenWindow, TrayIcon, tray_tooltip_for
+from .ui_language import resolve_ui_language
 from .ui_launch import UiHost
 from .wiring import TrayMenuBridge, UiMessageRouter, connect_greeting, plan_publish
 
@@ -72,27 +80,49 @@ def _unblock_shutdown(hwnd: int | None) -> None:
         _user32.ShutdownBlockReasonDestroy(hwnd)
 
 
-_ACTION_HINTS: dict[ErrorCode, str] = {
-    ErrorCode.MIC_DENIED: "откройте Параметры → Конфиденциальность → Микрофон",
-    ErrorCode.MIC_BUSY: "выберите другое устройство записи",
-    ErrorCode.NO_API_KEY: "сохраните ключ Groq (диспетчер учётных данных, BillyTalk/groq-api-key)",
-    ErrorCode.KEY_INVALID: "замените ключ Groq",
-    ErrorCode.RATE_LIMITED: "лимит запросов — подождите",
-    ErrorCode.NETWORK_DOWN: "нет связи; повторим сами, записи ждут",
-    ErrorCode.PROVIDER_ERROR: "сервис недоступен; повторим сами",
-    ErrorCode.PASTE_FAILED: "вставка не удалась — Ctrl+Alt+Z вставит последнее",
-    ErrorCode.FOCUS_LOST: "окно ушло из фокуса — текст в буфере, Ctrl+Alt+Z",
-    ErrorCode.SECURE_FIELD: "поле пароля: вставьте вручную из буфера",
-    ErrorCode.HOOK_DEAD: "перехват ввода переустановлен",
-    ErrorCode.CLIP_TOO_LONG: "клип длиннее 20 минут — говорите короче",
-}
+_STREAM_PHASES: Final = frozenset({"Initialized", "Recording"})
+"""Phases in which the capture stream is open: nothing else may touch the
+microphone or reload PortAudio while the machine is in one of them."""
+
+_QUIET_CODES: frozenset[ErrorCode] = frozenset({ErrorCode.HOOK_DEAD})
+"""Recovered by itself, nothing for the user to do: the icon and the log say
+it happened. A toast for every self-healed hook would train the user to
+dismiss toasts without reading them, which is how the *important* ones get
+missed."""
+
+_WARNING_CODES: frozenset[ErrorCode] = frozenset({
+    ErrorCode.NETWORK_DOWN, ErrorCode.RATE_LIMITED, ErrorCode.PROVIDER_ERROR,
+    ErrorCode.FOCUS_LOST, ErrorCode.SECURE_FIELD, ErrorCode.CLIP_TOO_LONG,
+})
+"""Recoverable and already handled by us — a warning icon, not an error one."""
 
 
-def _console_notify(code: ErrorCode) -> None:
-    """Cycle-1 stand-in for toasts: the error code and its ready action
-    (harness §7: every failure message carries an action, never a statement)."""
-    hint = _ACTION_HINTS.get(code, "")
-    print(f"[billytalk] {code.value}: {hint}", flush=True)
+class Notifier:
+    """Failures reach the user as a toast through the tray icon (spec §11).
+
+    Cycle 1 printed to a console; the shipped build is ``console=False``, so
+    that print goes to a handle nobody owns — the notification would simply
+    not exist. The icon is created late in ``main`` (it needs the window), and
+    ``DriverDeps`` is built early, so the tray is injected afterwards through
+    :attr:`tray`; until then, and if the icon failed to add at all, this
+    degrades to the log. That is safe by spec §11's own rule: the toast is
+    never the only channel — every one of these codes already sounded a cue
+    and moved the icon.
+
+    Called from the driver thread. ``Shell_NotifyIcon`` is thread-safe.
+    """
+
+    def __init__(self) -> None:
+        self.tray: TrayIcon | None = None
+
+    def notify(self, code: ErrorCode) -> None:
+        title = t(f"err.{code.value}.title")
+        action = t(f"err.{code.value}.action")
+        log.info("notify %s", code.value)  # code only: never the text (spec §13)
+        if code in _QUIET_CODES or self.tray is None:
+            return
+        level = "warning" if code in _WARNING_CODES else "error"
+        self.tray.notify(title, action, level=level)
 
 
 def main() -> int:
@@ -111,6 +141,12 @@ def main() -> int:
     if loaded.corrupt_backup is not None:
         print(f"[billytalk] конфиг был повреждён; сохранён как {loaded.corrupt_backup.name}", flush=True)
 
+    # Every string the core shows — the tooltip and the notifications — speaks
+    # this language from here on; the interface is told the resolved code in
+    # get_config and matches it (cycle 3, ui_language).
+    set_language(resolve_ui_language(config.ui_language))
+    notifier = Notifier()
+
     conn = connect(local / "history.db")
     ensure_schema(conn)
     store = HistoryStore(conn)
@@ -127,7 +163,7 @@ def main() -> int:
         except secrets.SecretUndecodable:
             # A key another tool wrote in the wrong encoding behaves like no
             # key: the user re-saves it. Anything else would crash a worker.
-            _console_notify(ErrorCode.KEY_INVALID)
+            notifier.notify(ErrorCode.KEY_INVALID)
             return None
 
     provider = GroqProvider(groq_key, model=config.groq_model)
@@ -164,7 +200,7 @@ def main() -> int:
         capture_factory=lambda **kw: CaptureSession(device=chosen_input_device(), **kw),
         capture_target=capture_target,
         play_cue=play_cue,
-        notify=_console_notify,
+        notify=notifier.notify,
         trim=trim_silence,
         encode=encode_flac,
         audio_dir=audio_dir,
@@ -245,12 +281,71 @@ def main() -> int:
         deps.language = config.language
         deps.max_hold_ms = config.max_hold_ms
         deps.retention_minutes = config.retention_minutes
+        # The tooltip and the notifications follow the interface's language
+        # setting the moment it changes, without a restart.
+        set_language(resolve_ui_language(config.ui_language))
 
     def has_groq_key() -> bool:
         try:
             return secrets.read_secret(secrets.TARGET_GROQ) is not None
         except secrets.SecretUndecodable:
             return False  # presence check only; the loud path is groq_key()
+
+    # -- the wizard's collaborators (spec §12) --------------------------- #
+
+    _PROBE_MS = 700
+    """Long enough for a Bluetooth headset to wake (100–300 ms, spec §5) and
+    for a syllable to land in the buffer; short enough that the wizard's
+    button feels like a button."""
+
+    def probe_microphone() -> dict[str, Any]:
+        """Open the real device the way a dictation would, listen briefly,
+        and report what happened (wizard step 1).
+
+        Runs on the background pool, never on the driver thread: opening a
+        device blocks for as long as the device feels like. A dictation in
+        flight owns the microphone, so the probe refuses instead of fighting
+        it for the device.
+        """
+        if driver.state.phase.name in _STREAM_PHASES:
+            return {"ok": False, "code": "recording", "device": None,
+                    "inputs": device_names_cache, "level": 0}
+        names = input_device_names()
+        if not names:
+            return {"ok": False, "code": "no_device", "device": None,
+                    "inputs": [], "level": 0}
+        device = chosen_input_device()
+        shown = device or (default_input_device() or {}).get("name") or names[0]
+        first_frame = threading.Event()
+        session = CaptureSession(device=device, on_started=first_frame.set)
+        try:
+            session.start()
+        except CaptureError as exc:
+            return {"ok": False, "code": exc.code.value, "device": shown,
+                    "inputs": names, "level": 0}
+        try:
+            heard = first_frame.wait(_PROBE_MS / 1000)
+            samples = session.stop(tail_ms=0)
+        except Exception:
+            session.cancel()
+            return {"ok": False, "code": "mic_busy", "device": shown,
+                    "inputs": names, "level": 0}
+        if not heard or samples.size == 0:
+            # The stream opened and stayed mute. Measured as its own outcome
+            # rather than folded into mic_denied: capture.py's docstring warns
+            # that some builds answer a privacy block with silence instead of
+            # an error, and a hardware mute switch looks exactly the same. The
+            # wizard names both possibilities instead of guessing one.
+            return {"ok": False, "code": "no_frames", "device": shown,
+                    "inputs": names, "level": 0}
+        peak = int(abs(samples.astype("int32")).max())
+        return {"ok": True, "code": "ok", "device": shown, "inputs": names,
+                "level": min(100, round(peak * 100 / 32767))}
+
+    def write_groq_key(key: str) -> None:
+        # The one place a key is written. No log line here or in the caller
+        # carries the value (spec §13).
+        secrets.write_secret(secrets.TARGET_GROQ, key)
 
     services = UiServices(
         config=config,
@@ -269,6 +364,10 @@ def main() -> int:
         apply_config_to_deps=apply_config_to_deps,
         has_groq_key=has_groq_key,
         hotkey_capture=hotkey_capture,
+        submit_background=lambda job: stt_pool.submit(job),
+        probe_microphone=probe_microphone,
+        write_groq_key=write_groq_key,
+        check_groq_key=provider.check_key,
     )
     router = UiMessageRouter(
         post=driver.post,
@@ -347,7 +446,11 @@ def main() -> int:
                 driver.post(Exit())
                 return
 
-    threading.Thread(target=stdin_watcher, name="billytalk-stdin", daemon=True).start()
+    # A windowed build (console=False) has no stdin at all — sys.stdin is None
+    # and iterating it raises inside a thread nobody watches. The console exit
+    # is a dev-checkout convenience (harness §9); shipped, the tray owns it.
+    if sys.stdin is not None:
+        threading.Thread(target=stdin_watcher, name="billytalk-stdin", daemon=True).start()
 
     # -- tray (spec §11; OPEN-QUESTIONS §22: the icon lives in the core) --- #
     window = HiddenWindow()
@@ -360,10 +463,11 @@ def main() -> int:
             tray = None
     else:
         log.warning("hidden window failed to start; continuing without a tray")
+    # From here failures reach the user as toasts, not as prints into a
+    # console that a windowed build does not have.
+    notifier.tray = tray
 
     # -- power, session and device messages on the hidden window (spec §3/§5) -- #
-    _STREAM_PHASES = frozenset({"Initialized", "Recording"})
-
     def reload_devices() -> None:
         # Driver thread: refresh PortAudio's frozen list and the cache the
         # press path reads, then tell the interface. The stream is provably
@@ -412,6 +516,15 @@ def main() -> int:
         server.send(plan.frame())
 
     deps.publish_state = publish
+
+    # First run (spec §12): the wizard is not something to go looking for in a
+    # tray menu — a fresh install has no key, and without a key the first
+    # dictation can only fail. Raise the interface into the wizard right here.
+    # `wizard_done` flips only when the wizard itself says so, so an install
+    # that was abandoned halfway asks again next time.
+    if not config.wizard_done:
+        log.info("first run: raising the interface for the wizard")
+        ui_host.ensure_running()
 
     # Everything long-lived exists; move it out of GC's reach so a collection
     # pass never runs inside the hook callback's budget (spec §2, ADR-0004).

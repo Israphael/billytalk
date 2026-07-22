@@ -53,6 +53,10 @@ __all__ = ["GROQ_HOST", "GroqProvider", "USER_AGENT", "build_multipart"]
 
 GROQ_HOST: Final = "api.groq.com"
 _PATH: Final = "/openai/v1/audio/transcriptions"
+_MODELS_PATH: Final = "/openai/v1/models"
+"""The cheapest authenticated endpoint there is: the wizard's «проверка
+запросом» (spec §12, step 6) must answer in a second and must not spend the
+user's transcription quota to find out whether their key is typed correctly."""
 
 USER_AGENT: Final = "BillyTalk/0.1.0 (+https://github.com/Israphael/billytalk)"
 """Cloudflare rejects clients without a User-Agent by signature (research/07)."""
@@ -136,6 +140,44 @@ class GroqProvider:
 
     def warm(self) -> None:
         self._pool.warm()
+
+    def check_key(self) -> Literal["ok", "invalid", "no_key", "network"]:
+        """Is the stored key one Groq accepts? (spec §12, wizard step 6.)
+
+        Four answers, each one the wizard says something different about.
+        ``429`` counts as **ok**: rate limiting proves the key authenticated —
+        telling the user their key is bad because they are busy would send
+        them off to mint a second one for nothing. Anything the server-side
+        cannot answer (5xx, a dead socket) is ``network``: «не смогли
+        проверить», not «плохой ключ».
+
+        The response body is discarded unread past the status line — nothing
+        here logs, exactly as the module docstring demands.
+        """
+        key = self._key_source()
+        if not key:
+            return "no_key"
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+        }
+        pooled = self._pool.acquire()
+        try:
+            pooled.raw.request("GET", _MODELS_PATH, body=None, headers=headers)
+            response = pooled.raw.getresponse()
+            response.read()  # required before the connection can be reused
+            status = response.status
+        except (TimeoutError, socket.timeout, ConnectionError,
+                http.client.HTTPException, ssl.SSLError, OSError):
+            self._pool.discard(pooled.raw)
+            return "network"
+        self._pool.release(pooled.raw)
+        if status in (401, 403):
+            return "invalid"
+        if status == 200 or status == 429:
+            return "ok"
+        return "network"
 
     def transcribe(self, clip: AudioClip, options: TranscriptionOptions) -> TranscriptionResult:
         key = self._key_source()

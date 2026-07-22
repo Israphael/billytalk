@@ -357,3 +357,40 @@ def test_parse_failure_never_chains_the_transcript_payload(tmp_path: Path) -> No
     assert excinfo.value.__cause__ is None
     assert excinfo.value.__context__ is None
     assert "секретные" not in repr(excinfo.value)
+
+
+# --------------------------------------------------------------------------- #
+# the wizard's key check (spec §12, step 6)
+# --------------------------------------------------------------------------- #
+
+
+def test_check_key_without_a_key_never_asks_the_network(tmp_path: Path) -> None:
+    provider, connections, _clip = _provider([], tmp_path, key=None)
+    assert provider.check_key() == "no_key"
+    assert connections == []
+
+
+@pytest.mark.parametrize("status,expected", [
+    (200, "ok"),
+    (429, "ok"),      # rate limited proves the key authenticated
+    (401, "invalid"),
+    (403, "invalid"),
+    (500, "network"),  # theirs, not the key's — «не смогли проверить»
+    (404, "network"),
+])
+def test_check_key_maps_the_status_to_what_the_wizard_says(
+    tmp_path: Path, status: int, expected: str
+) -> None:
+    response = ScriptedResponse(status, b"{}", {})
+    provider, connections, _clip = _provider([response], tmp_path)
+
+    assert provider.check_key() == expected
+    method, path, _body, headers = connections[0].requests[0]
+    assert (method, path) == ("GET", "/openai/v1/models"), "the cheap endpoint"
+    assert headers["User-Agent"] == USER_AGENT
+    assert headers["Authorization"] == "Bearer gsk_test"
+
+
+def test_check_key_calls_a_dead_socket_network_not_invalid(tmp_path: Path) -> None:
+    provider, _connections, _clip = _provider([OSError("no route")], tmp_path)
+    assert provider.check_key() == "network"

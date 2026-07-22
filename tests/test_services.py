@@ -44,6 +44,16 @@ class World:
         self.insert_calls: list[tuple[Any, Any, str]] = []
         self.dictionary = Dictionary(DEFAULT_RULES)
         self.save_raises = False
+        # cycle-3 (wizard) world
+        self.key_present = True
+        self.keys_written: list[str] = []
+        self.key_write_raises = False
+        self.key_check = "ok"
+        self.background_ran = 0
+        self.probe_result: dict[str, Any] = {
+            "ok": True, "code": "ok", "device": "Микрофон (USB)",
+            "inputs": ["Микрофон (USB)"], "level": 42,
+        }
 
         def post_job(fn) -> None:
             self.jobs_ran += 1
@@ -69,8 +79,23 @@ class World:
             save_dictionary=save_dictionary,
             current_dictionary=lambda: self.dictionary,
             apply_config_to_deps=self._apply,
-            has_groq_key=lambda: True,
+            has_groq_key=lambda: self.key_present,
+            submit_background=self._background,
+            probe_microphone=lambda: self.probe_result,
+            write_groq_key=self._write_key,
+            check_groq_key=lambda: self.key_check,
         )
+
+    def _background(self, job) -> None:
+        # Inline, like post_job: the wizard's slow errands answer synchronously
+        # in the tests so a reply is always in `sent` when the verb returns.
+        self.background_ran += 1
+        job()
+
+    def _write_key(self, key: str) -> None:
+        if self.key_write_raises:
+            raise RuntimeError("credential store refused")
+        self.keys_written.append(key)
 
     def _insert(self, target: Any, snapshot: Any, text: str) -> InsertReport:
         self.insert_calls.append((target, snapshot, text))
@@ -420,3 +445,111 @@ def test_history_insert_reports_a_clipboard_failure_never_silence(world: World) 
     world.services.handle("history_insert", {"id": 42, "row_id": 1})
     assert world.sent[-1] == {"type": "reply", "id": 42, "error": "insert_failed"}
     assert world.cues == [Cue.CLIPBOARD], "a failure is always audible"
+
+
+# --------------------------------------------------------------------------- #
+# cycle 3: the wizard's verbs (spec §12)
+# --------------------------------------------------------------------------- #
+
+
+def test_config_view_carries_the_wizard_flag_and_the_resolved_ui_language(
+    world: World,
+) -> None:
+    """The interface must never resolve «auto» itself: reading the Windows UI
+    language is a ctypes call and harness §1 keeps those out of ui/."""
+    view = _result(world.services.handle("get_config", {"id": 50}))["config"]
+    assert view["wizard_done"] is False
+    assert view["ui_language"] == "auto"
+    assert view["ui_language_effective"] in ("ru", "en")
+
+
+def test_wizard_done_and_ui_language_are_patchable_and_persist(world: World) -> None:
+    frame = world.services.handle("set_config", {
+        "id": 51, "patch": {"wizard_done": True, "ui_language": "en"},
+    })
+    view = _result(frame)["config"]
+    assert view["wizard_done"] is True and view["ui_language"] == "en"
+    assert view["ui_language_effective"] == "en"
+    on_disk = json.loads(world.config_path.read_text(encoding="utf-8"))
+    assert on_disk["wizard_done"] is True and on_disk["ui_language"] == "en"
+
+
+def test_ui_language_rejects_anything_outside_the_tables(world: World) -> None:
+    frame = world.services.handle("set_config", {"id": 52, "patch": {"ui_language": "de"}})
+    assert frame == {"type": "reply", "id": 52, "error": "bad_patch"}
+    assert world.config.ui_language == "auto"
+
+
+def test_mic_probe_answers_off_the_read_thread(world: World) -> None:
+    assert world.services.handle("mic_probe", {"id": 53}) is None, "no sync reply"
+    assert world.background_ran == 1, "opening a device must not block the read thread"
+    assert world.sent[-1]["result"]["ok"] is True
+    assert world.sent[-1]["result"]["level"] == 42
+
+
+def test_mic_probe_turns_a_raising_probe_into_an_answer(world: World) -> None:
+    """A step waiting forever on a reply that never comes is worse than a
+    wrong-but-honest «занято»."""
+    def boom() -> dict[str, Any]:
+        raise RuntimeError("PortAudio exploded")
+
+    world.services._probe_microphone = boom  # type: ignore[assignment]
+    world.services.handle("mic_probe", {"id": 54})
+    assert world.sent[-1]["result"] == {
+        "ok": False, "code": "mic_busy", "device": None, "inputs": [],
+    }
+
+
+def test_set_key_stores_it_and_never_echoes_it(world: World) -> None:
+    world.services.handle("set_key", {"id": 55, "key": "  gsk_secret_value  "})
+    assert world.keys_written == ["gsk_secret_value"], "trimmed, stored once"
+    reply = world.sent[-1]
+    assert reply["result"] == {"stored": True}
+    assert "gsk_secret_value" not in json.dumps(reply, ensure_ascii=False)
+
+
+def test_set_key_refuses_an_empty_value_and_reports_a_store_failure(world: World) -> None:
+    world.services.handle("set_key", {"id": 56, "key": "   "})
+    assert world.sent[-1] == {"type": "reply", "id": 56, "error": "bad_key"}
+    world.key_write_raises = True
+    world.services.handle("set_key", {"id": 57, "key": "gsk_x"})
+    assert world.sent[-1] == {"type": "reply", "id": 57, "error": "store_failed"}
+
+
+def test_set_key_keeps_the_value_out_of_the_log(world: World, caplog) -> None:
+    """Spec §13: the key never appears in a log line, an exception or a repr."""
+    caplog.set_level("DEBUG")
+    world.services.handle("set_key", {"id": 58, "key": "gsk_do_not_log_me"})
+    world.key_write_raises = True
+    world.services.handle("set_key", {"id": 59, "key": "gsk_do_not_log_me"})
+    assert "gsk_do_not_log_me" not in caplog.text
+
+
+def test_test_key_reports_the_status_word(world: World) -> None:
+    world.key_check = "invalid"
+    world.services.handle("test_key", {"id": 60})
+    assert world.sent[-1]["result"] == {"status": "invalid"}
+    assert world.background_ran == 1, "a network round trip runs in the background"
+
+
+def test_test_key_turns_a_raising_check_into_network(world: World) -> None:
+    def boom() -> str:
+        raise OSError("socket died")
+
+    world.services._check_groq_key = boom  # type: ignore[assignment]
+    world.services.handle("test_key", {"id": 61})
+    assert world.sent[-1]["result"] == {"status": "network"}
+
+
+def test_autostart_verbs_answer_the_state_and_refuse_a_non_boolean(world: World) -> None:
+    frame = world.services.handle("autostart_get", {"id": 62})
+    state = _result(frame)
+    assert set(state) == {
+        "available", "enabled", "registered", "disabled_by_windows",
+        "matches_current_exe",
+    }
+    # A dev checkout has no installed exe to register, so the switch is honest
+    # about being unavailable rather than pretending to work.
+    assert state["available"] is False
+    bad = world.services.handle("autostart_set", {"id": 63, "enabled": "yes"})
+    assert bad == {"type": "reply", "id": 63, "error": "bad_value"}

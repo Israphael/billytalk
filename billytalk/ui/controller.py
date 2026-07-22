@@ -20,6 +20,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ..core.ipc.protocol import menu_model, shutdown, toggle_dictation
+from ..i18n import t
 from .overlay import Plashka, PlashkaLook
 
 log = logging.getLogger("billytalk.ui.controller")
@@ -59,12 +60,12 @@ _CMD_SETTINGS, _CMD_TOGGLE, _CMD_HISTORY, _CMD_EXIT = 201, 202, 203, 209
 
 def _menu_items(enabled: bool, *, windows: bool) -> list[dict[str, Any]]:
     return [
-        {"command": _CMD_SETTINGS, "label": "Открыть настройки", "enabled": windows},
-        {"command": _CMD_HISTORY, "label": "История", "enabled": windows},
+        {"command": _CMD_SETTINGS, "label": t("menu.settings"), "enabled": windows},
+        {"command": _CMD_HISTORY, "label": t("menu.history"), "enabled": windows},
         {"command": 0, "label": ""},  # separator
-        {"command": _CMD_TOGGLE, "label": "Диктовка включена", "checked": enabled},
+        {"command": _CMD_TOGGLE, "label": t("menu.toggle"), "checked": enabled},
         {"command": 0, "label": ""},
-        {"command": _CMD_EXIT, "label": "Выход"},
+        {"command": _CMD_EXIT, "label": t("menu.exit")},
     ]
 
 
@@ -85,6 +86,15 @@ class UiController:
         self.on_hotkey_captured: Callable[[dict[str, Any]], None] | None = None
         """The capture dialog parks itself here while it is open —
         ``hotkey_captured`` is a push, not a reply, so it needs its own seat."""
+        self.on_state: Callable[[str | None], None] | None = None
+        """The wizard's live-test step watches the machine here: it must know
+        that a dictation happened before it asks the history for the words."""
+        self.apply_language: Callable[[str], None] | None = None
+        """Wired by ``__main__``: switch the string table, resend the tray menu
+        and rebuild the open windows. Labels are read at build time, so a live
+        relabel would mean tracking every static in every window — rebuilding
+        is what Windows itself does and is the only version that cannot leave
+        half a window in the old language."""
         self._enabled = True
         # A random base, not 1: if the core restarts a UI mid-flight, a
         # driver-thread job posted by the OLD interface answers over the new
@@ -130,6 +140,8 @@ class UiController:
                 self.on_hotkey_captured(message)
 
     def _on_state(self, state: object) -> None:
+        if self.on_state is not None:
+            self.on_state(state if isinstance(state, str) else None)
         look = _LOOK_FOR.get(state)
         if look is not None:
             self._plashka.show(look)

@@ -122,7 +122,9 @@ def test_settings_frame_fills_from_the_core_replies(wx_app) -> None:
         assert frame._model_label.GetLabel() == "whisper-large-v3-turbo"
         assert frame._rules_list.GetItemCount() == 1
         assert frame._rules_list.GetItemText(0, 1) == "прот"
-        assert [m["type"] for m in fake.sent] == ["get_config", "dictionary_get"]
+        assert [m["type"] for m in fake.sent] == [
+            "get_config", "dictionary_get", "autostart_get",
+        ]
     finally:
         frame.Destroy()
 
@@ -270,3 +272,213 @@ def test_reply_to_a_destroyed_window_is_dropped(wx_app) -> None:
 class _FakePlashka:
     def show(self, look: Any) -> None: ...
     def hide(self) -> None: ...
+
+
+# --------------------------------------------------------------------------- #
+# the first-run wizard (spec §12)
+# --------------------------------------------------------------------------- #
+
+
+class WizardController(FakeController):
+    """A controller with the seats the wizard actually uses."""
+
+    def __init__(self, replies: dict[str, Any]) -> None:
+        super().__init__(replies)
+        self.on_hotkey_captured = None
+        self.on_state = None
+        self.apply_language = None
+
+
+_WIZARD_CONFIG = {
+    "config": {
+        "language": "ru", "ui_language": "auto", "ui_language_effective": "ru",
+        "wizard_done": False, "ptt_code": 4099, "audio_input_device": None,
+        "groq_model": "whisper-large-v3-turbo", "polish_enabled": False,
+        "press_enter_after": False, "retention_minutes": 60, "max_hold_ms": 300000,
+        "has_groq_key": False,
+    }
+}
+
+_AUTOSTART_REPLY = {
+    "available": True, "enabled": False, "registered": False,
+    "disabled_by_windows": False, "matches_current_exe": True,
+}
+
+
+def _wizard(replies: dict[str, Any] | None = None):
+    from billytalk.ui.windows.wizard import WizardFrame
+
+    base: dict[str, Any] = {
+        "get_config": _WIZARD_CONFIG,
+        "autostart_get": _AUTOSTART_REPLY,
+        "autostart_set": _AUTOSTART_REPLY,
+    }
+    base.update(replies or {})
+    controller = WizardController(base)
+    return WizardFrame(controller), controller  # type: ignore[arg-type]
+
+
+def test_mic_line_names_every_measured_outcome(wx_app) -> None:
+    """Every probe code the core can answer with has its own sentence — a
+    silent microphone and a denied one need different actions from the user."""
+    from billytalk.ui.windows.wizard import mic_line
+
+    ok = mic_line({"ok": True, "device": "Микрофон (USB)", "level": 42})
+    assert "Микрофон (USB)" in ok and "42" in ok
+    lines = {
+        code: mic_line({"ok": False, "code": code})
+        for code in ("mic_denied", "mic_busy", "no_device", "no_frames")
+    }
+    assert len(set(lines.values())) == 4, f"outcomes share wording: {lines}"
+    assert all(line for line in lines.values())
+    # An unknown code still says something actionable rather than nothing.
+    assert mic_line({"ok": False, "code": "who_knows"})
+
+
+def test_wizard_walks_the_seven_steps_of_the_spec(wx_app) -> None:
+    from billytalk.ui.windows.wizard import STEP_COUNT
+
+    frame, _c = _wizard()
+    try:
+        assert STEP_COUNT == 7, "spec §12 names seven steps"
+        assert frame._step == 0 and not frame._back.IsEnabled()
+        for expected in range(1, STEP_COUNT):
+            frame._on_next(None)  # type: ignore[arg-type]
+            assert frame._step == expected
+        assert frame._next.GetLabel() == "Готово", "the last step finishes"
+        assert frame._back.IsEnabled()
+    finally:
+        frame.Destroy()
+
+
+def test_wizard_fills_the_bindings_from_the_core(wx_app) -> None:
+    frame, _c = _wizard()
+    try:
+        assert "Mouse 4" in frame._hotkey_label.GetLabel()
+        assert "Mouse 4" in frame._test_body.GetLabel()
+    finally:
+        frame.Destroy()
+
+
+def test_wizard_mic_step_offers_the_privacy_settings_only_when_denied(wx_app) -> None:
+    frame, controller = _wizard({
+        "mic_probe": {"ok": False, "code": "mic_denied", "device": None,
+                      "inputs": [], "level": 0},
+    })
+    try:
+        assert not frame._mic_settings.IsShown(), "no button before we know"
+        frame._on_mic_check(None)  # type: ignore[arg-type]
+        assert frame._mic_settings.IsShown()
+        assert "микрофон" in frame._mic_status.GetLabel().lower()
+        assert any(m["type"] == "mic_probe" for m in controller.sent)
+    finally:
+        frame.Destroy()
+
+
+def test_wizard_key_step_saves_then_checks_and_clears_the_field(wx_app) -> None:
+    frame, controller = _wizard({
+        "set_key": {"stored": True},
+        "test_key": {"status": "ok"},
+    })
+    try:
+        form = frame._key_form
+        form._field.SetValue("gsk_typed_by_hand")
+        form._on_save(None)  # type: ignore[arg-type]
+        verbs = [m["type"] for m in controller.sent]
+        assert verbs.count("set_key") == 1 and verbs.count("test_key") == 1
+        sent_key = next(m for m in controller.sent if m["type"] == "set_key")
+        assert sent_key["key"] == "gsk_typed_by_hand"
+        assert form._field.GetValue() == "", "the key does not stay on screen"
+        assert form.accepted is True
+        assert form.status.GetLabel() == "Ключ принят."
+    finally:
+        frame.Destroy()
+
+
+def test_wizard_key_step_reports_a_rejected_key_without_pretending(wx_app) -> None:
+    frame, _c = _wizard({"set_key": {"stored": True}, "test_key": {"status": "invalid"}})
+    try:
+        form = frame._key_form
+        form._field.SetValue("gsk_wrong")
+        form._on_save(None)  # type: ignore[arg-type]
+        assert form.accepted is False
+        assert "отклонил" in form.status.GetLabel().lower()
+    finally:
+        frame.Destroy()
+
+
+def test_wizard_key_step_refuses_an_empty_field_without_asking_the_core(wx_app) -> None:
+    frame, controller = _wizard()
+    try:
+        frame._key_form._on_save(None)  # type: ignore[arg-type]
+        assert not any(m["type"] == "set_key" for m in controller.sent)
+        assert frame._key_form.status.GetLabel()
+    finally:
+        frame.Destroy()
+
+
+def test_wizard_live_test_ignores_dictations_older_than_the_step(wx_app) -> None:
+    """The proof is a dictation made *now*; yesterday's history would
+    congratulate the user for something they did not just do."""
+    import time
+
+    now_ms = int(time.time() * 1000)
+    frame, _c = _wizard()
+    try:
+        frame._go(6)
+        stale = {"result": {"rows": [
+            {"id": 1, "created_at": now_ms - 86_400_000, "text": "вчерашняя диктовка"},
+        ]}, "type": "reply", "id": 1}
+        frame._on_test_rows(stale)
+        assert not frame.state.get("tested")
+        assert "Жду" in frame._test_status.GetLabel()
+
+        fresh = {"result": {"rows": [
+            {"id": 2, "created_at": now_ms + 5_000, "text": "проверка связи"},
+        ]}, "type": "reply", "id": 2}
+        frame._on_test_rows(fresh)
+        assert frame.state["tested"] is True
+        assert "проверка связи" in frame._test_status.GetLabel()
+    finally:
+        frame.Destroy()
+
+
+def test_wizard_leaves_the_state_seat_clean_when_it_closes(wx_app) -> None:
+    """A dead window's callback firing on the next state push is the same
+    «wrapped C/C++ object deleted» the M2 review found in the reply table."""
+    frame, controller = _wizard()
+    frame._go(6)
+    assert controller.on_state is not None, "the live test takes the seat"
+    frame.Close()
+    wx.Yield()
+    assert controller.on_state is None
+
+
+def test_wizard_finish_marks_the_wizard_done(wx_app, monkeypatch) -> None:
+    import wx as wx_module
+
+    frame, controller = _wizard()
+    monkeypatch.setattr(wx_module, "MessageBox", lambda *a, **k: wx_module.OK)
+    try:
+        frame._go(6)
+        frame._on_next(None)  # type: ignore[arg-type]
+        patch = next(
+            m for m in controller.sent
+            if m["type"] == "set_config" and "wizard_done" in m.get("patch", {})
+        )
+        assert patch["patch"] == {"wizard_done": True}
+    finally:
+        if frame:
+            frame.Destroy()
+
+
+def test_wizard_autostart_checkbox_speaks_to_the_core(wx_app) -> None:
+    frame, controller = _wizard()
+    try:
+        frame._go(6)
+        frame._autostart.SetValue(True)
+        frame._on_autostart(None)  # type: ignore[arg-type]
+        sent = next(m for m in controller.sent if m["type"] == "autostart_set")
+        assert sent["enabled"] is True
+    finally:
+        frame.Destroy()

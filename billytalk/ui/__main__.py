@@ -22,11 +22,13 @@ from pathlib import Path
 import wx
 
 from ..core.logging_setup import configure_logging
+from ..i18n import set_language
 from .controller import UiController
 from .ipc.client import IpcClient
 from .overlay import Plashka
 from .windows.history import HistoryFrame
 from .windows.settings import SettingsFrame
+from .windows.wizard import WizardFrame
 
 log = logging.getLogger("billytalk.ui.main")
 
@@ -83,13 +85,51 @@ def main(argv: list[str] | None = None) -> int:
         frames[name] = frame
         frame.Show()
 
-    controller.open_settings = lambda: raise_or_build(
-        "settings", lambda: SettingsFrame(controller)
-    )
-    controller.open_history = lambda: raise_or_build(
-        "history", lambda: HistoryFrame(controller)
-    )
+    builders = {
+        "settings": lambda: SettingsFrame(controller),
+        "history": lambda: HistoryFrame(controller),
+    }
+    controller.open_settings = lambda: raise_or_build("settings", builders["settings"])
+    controller.open_history = lambda: raise_or_build("history", builders["history"])
+
+    def apply_language(code: str) -> None:
+        """Switch the string table and make everything on screen agree.
+
+        Windows are rebuilt, not relabelled: their labels are read once at
+        build time (see the settings module docstring). The tray menu is data
+        we resend, so it only needs a push. The wizard rebuilds itself — it
+        carries a step and half-answered questions that a blind rebuild here
+        would throw away.
+        """
+        set_language(code)
+        controller.push_menu()
+        open_names = [name for name, frame in frames.items() if frame]
+        for name in open_names:
+            frames.pop(name).Destroy()
+        for name in open_names:
+            raise_or_build(name, builders[name])
+
+    controller.apply_language = apply_language
+
+    def on_config(frame: dict) -> None:
+        if "error" in frame:
+            return
+        config = frame["result"]["config"]
+        effective = config.get("ui_language_effective")
+        if isinstance(effective, str):
+            set_language(effective)
+            controller.push_menu()  # the menu was filled in the default language
+        # Spec §12: a fresh install opens the wizard by itself. The core also
+        # raised this process for exactly that reason; asking the config keeps
+        # the decision in one place — and keeps a manually started interface
+        # from opening a wizard the user already finished.
+        if not config.get("wizard_done"):
+            wizard = WizardFrame(controller)
+            wizard.Show()
+            wizard.Raise()
+
     controller.push_menu()  # fill the tray menu straight away
+    controller.request({"type": "get_config"}, on_config)
     log.info("connected to core %s", client.core_version)
 
     try:

@@ -50,6 +50,8 @@ from enum import Enum
 from typing import Final
 from uuid import uuid4
 
+from ..i18n import t
+
 __all__ = [
     "HiddenWindow",
     "TrayEvent",
@@ -167,7 +169,15 @@ NOTIFYICON_VERSION_4: Final = 4
 NIF_MESSAGE: Final = 0x01
 NIF_ICON: Final = 0x02
 NIF_TIP: Final = 0x04
+NIF_INFO: Final = 0x10
 NIF_SHOWTIP: Final = 0x80
+
+NIIF_INFO: Final = 0x01
+NIIF_WARNING: Final = 0x02
+NIIF_ERROR: Final = 0x03
+NIIF_NOSOUND: Final = 0x10
+"""Our own cue has already sounded (spec §11: the toast is never the only
+channel, and the two of them chiming together is one alarm too many)."""
 
 MF_STRING: Final = 0x0000
 MF_SEPARATOR: Final = 0x0800
@@ -402,15 +412,16 @@ def tray_state_for(
     return TrayState.IDLE
 
 
-_TOOLTIPS: Final = {
-    TrayState.IDLE: "BillyTalk — готов",
-    TrayState.RECORDING: "BillyTalk — запись",
-    TrayState.TRANSCRIBING: "BillyTalk — расшифровка",
-    TrayState.QUEUE: "BillyTalk — записи в очереди",
-    TrayState.OFFLINE: "BillyTalk — нет связи, записи ждут",
-    TrayState.STOPPED: "BillyTalk — диктовка выключена",
-    TrayState.ERROR: "BillyTalk — ошибка",
+_TOOLTIP_KEYS: Final = {
+    TrayState.IDLE: "tray.idle",
+    TrayState.RECORDING: "tray.recording",
+    TrayState.TRANSCRIBING: "tray.transcribing",
+    TrayState.QUEUE: "tray.queue",
+    TrayState.OFFLINE: "tray.offline",
+    TrayState.STOPPED: "tray.stopped",
+    TrayState.ERROR: "tray.error",
 }
+
 
 def tray_tooltip_for(state: TrayState, *, waiting: int = 0) -> str:
     """The icon's hover text. ``OFFLINE`` carries the count spec §3 makes
@@ -418,9 +429,7 @@ def tray_tooltip_for(state: TrayState, *, waiting: int = 0) -> str:
     are held for the network from the icon alone, not minutes later by silence.
     Every other state's text is fixed, so ``waiting`` is ignored there.
     """
-    if state is TrayState.OFFLINE:
-        return f"BillyTalk — нет связи, {waiting} записей ждут"
-    return _TOOLTIPS[state]
+    return t(_TOOLTIP_KEYS[state], waiting=waiting)
 
 
 _DOT_COLORS: Final = {
@@ -632,7 +641,7 @@ class TrayIcon:
         self._on_command = on_command
         self._on_select = on_select
         self._state = TrayState.IDLE
-        self._tooltip = _TOOLTIPS[TrayState.IDLE]
+        self._tooltip = tray_tooltip_for(TrayState.IDLE)
         self._added = False
         self._light_taskbar = _system_uses_light_taskbar()
         self._icons: dict[TrayState, int] = {}
@@ -650,10 +659,38 @@ class TrayIcon:
 
     def set_state(self, state: TrayState, *, tooltip: str | None = None) -> bool:
         self._state = state
-        self._tooltip = tooltip if tooltip is not None else _TOOLTIPS[state]
+        self._tooltip = tooltip if tooltip is not None else tray_tooltip_for(state)
         if not self._added:
             return False
         return self._notify(NIM_MODIFY, self._data())
+
+    def notify(self, title: str, text: str, *, level: str = "info") -> bool:
+        """Show a notification through the icon (spec §11's «Уведомления»).
+
+        ``Shell_NotifyIcon`` with ``NIF_INFO`` is deliberately chosen over the
+        modern toast API: the latter needs a registered AppUserModelID **and**
+        a Start-menu shortcut or it fails silently, which is precisely the trap
+        spec §11 flags. This path degrades to a plain balloon at worst.
+
+        Truncation is by the struct: ``szInfo`` holds 256 characters and
+        ``szInfoTitle`` 64, and a string that does not fit makes the whole call
+        fail rather than clipping itself — so it is clipped here.
+
+        Returns False when there is no icon to hang it on. The caller must not
+        care: every failure the notification describes is already spoken by a
+        cue and shown by the icon (spec §11 — a toast is never the only
+        channel), and Focus Assist can swallow it anyway.
+        """
+        if not self._added:
+            return False
+        data = self._data()
+        data.uFlags |= NIF_INFO
+        data.szInfoTitle = title[:63]
+        data.szInfo = text[:255]
+        data.dwInfoFlags = {
+            "error": NIIF_ERROR, "warning": NIIF_WARNING,
+        }.get(level, NIIF_INFO) | NIIF_NOSOUND
+        return self._notify(NIM_MODIFY, data)
 
     def remove(self) -> None:
         if self._added:

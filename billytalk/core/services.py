@@ -39,12 +39,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final
 
+from .autostart import autostart_state, set_autostart
 from .insert.apprules import rule_for
 from .insert.inserter import prepare_text
 from .ipc.protocol import reply
 from .machine.effects import Cue
 from .store.config import Config, save_config
 from .text.dictionary import Dictionary, Rule
+from .ui_language import UI_LANGUAGE_SETTINGS, resolve_ui_language
 
 log = logging.getLogger("billytalk.services")
 
@@ -55,6 +57,8 @@ SERVICE_VERBS: Final = frozenset({
     "history_search", "history_insert", "history_export",
     "dictionary_get", "dictionary_set",
     "capture_hotkey_start", "capture_hotkey_stop",
+    "mic_probe", "set_key", "test_key",
+    "autostart_get", "autostart_set",
 })
 
 _SEARCH_CAP: Final = 200
@@ -77,6 +81,8 @@ _EXPORT_FORMATS: Final = frozenset({"txt", "csv", "json"})
 # a live model switch is cycle-3 work with a provider refresh (cue-review §33).
 _PATCHABLE: Final[dict[str, Callable[[Any], bool]]] = {
     "language": lambda v: v in ("ru", "en"),
+    "ui_language": lambda v: v in UI_LANGUAGE_SETTINGS,
+    "wizard_done": lambda v: isinstance(v, bool),
     "audio_input_device": lambda v: v is None or (isinstance(v, str) and len(v) < 256),
     "polish_enabled": lambda v: isinstance(v, bool),
     "press_enter_after": lambda v: isinstance(v, bool),
@@ -87,8 +93,9 @@ _PATCHABLE: Final[dict[str, Callable[[Any], bool]]] = {
 }
 
 _CONFIG_VIEW: Final = (
-    "language", "ptt_code", "audio_input_device", "groq_model",
-    "polish_enabled", "press_enter_after", "retention_minutes", "max_hold_ms",
+    "language", "ui_language", "wizard_done", "ptt_code", "audio_input_device",
+    "groq_model", "polish_enabled", "press_enter_after", "retention_minutes",
+    "max_hold_ms",
 )
 """What get_config shows: the patchable set plus the read-only bindings the
 settings window displays (ptt_code — changed via M3 capture, shown here)."""
@@ -123,6 +130,12 @@ class UiServices:
         apply_config_to_deps: Callable[[], None],
         has_groq_key: Callable[[], bool],
         hotkey_capture: Any | None = None,
+        # cycle-3 (wizard) collaborators — all optional so the milestone-2
+        # tests build UiServices exactly as they did:
+        submit_background: Callable[[Callable[[], None]], None] | None = None,
+        probe_microphone: Callable[[], dict[str, Any]] | None = None,
+        write_groq_key: Callable[[str], None] | None = None,
+        check_groq_key: Callable[[], str] | None = None,
     ) -> None:
         self._config = config
         self._config_path = config_path
@@ -140,6 +153,10 @@ class UiServices:
         self._apply_config_to_deps = apply_config_to_deps
         self._has_groq_key = has_groq_key
         self._hotkey_capture = hotkey_capture
+        self._submit_background = submit_background
+        self._probe_microphone = probe_microphone
+        self._write_groq_key = write_groq_key
+        self._check_groq_key = check_groq_key
         self._ro_lock = threading.Lock()
         self._ro_conn: sqlite3.Connection | None = None
 
@@ -166,6 +183,16 @@ class UiServices:
             return self._history_insert(rid, message.get("row_id"))
         if kind == "history_export":
             return self._history_export(rid, message.get("format"), message.get("path"))
+        if kind == "mic_probe":
+            return self._mic_probe(rid)
+        if kind == "set_key":
+            return self._set_key(rid, message.get("key"))
+        if kind == "test_key":
+            return self._test_key(rid)
+        if kind == "autostart_get":
+            return self._reply_frame(rid, autostart_state().as_wire())
+        if kind == "autostart_set":
+            return self._autostart_set(rid, message.get("enabled"))
         if kind == "capture_hotkey_start" and self._hotkey_capture is not None:
             self._hotkey_capture.start(rid, message.get("action"))
             return None  # the reply comes from the driver-thread job
@@ -193,6 +220,10 @@ class UiServices:
         view = {name: getattr(self._config, name) for name in _CONFIG_VIEW}
         # The key itself never crosses the channel (spec §13) — presence does.
         view["has_groq_key"] = bool(self._has_groq_key())
+        # «auto» is resolved HERE, on the core's side of harness §1's border:
+        # reading the Windows UI language is a ctypes call, and the interface
+        # must never make one for a label. It receives an answer, not a rule.
+        view["ui_language_effective"] = resolve_ui_language(self._config.ui_language)
         return {"config": view}
 
     def _set_config(self, rid: int | None, patch: object) -> dict[str, Any] | None:
@@ -222,6 +253,100 @@ class UiServices:
         # config object itself is already live for every closure that reads it.
         self._post_job(self._apply_config_to_deps)
         return self._reply_frame(rid, self._config_view())
+
+    # ------------------------------------------------------------------ #
+    # the wizard's verbs (spec §12)
+    # ------------------------------------------------------------------ #
+
+    def _background(self, job: Callable[[], None], rid: int | None) -> None:
+        """Run ``job`` off the server's read thread.
+
+        Everything below can block for a noticeable time — opening an audio
+        device wakes a Bluetooth headset, checking the key is a network round
+        trip — and the read thread is the single lane every other verb arrives
+        on. Blocking it would freeze the whole interface behind a wizard step.
+        """
+        if self._submit_background is None:
+            self._send_reply(rid, error="unavailable")
+            return
+        self._submit_background(job)
+
+    def _mic_probe(self, rid: int | None) -> None:
+        """Wizard step 1: does the microphone actually open (spec §12)?
+
+        The probe is the injected collaborator's job; this method only decides
+        who runs it and how the answer travels. A probe that raises answers
+        ``mic_busy`` — the wizard's «занято другим приложением» branch — rather
+        than leaving the step waiting forever on a reply that never comes.
+        """
+        if self._probe_microphone is None:
+            self._send_reply(rid, error="unavailable")
+            return None
+
+        def job() -> None:
+            try:
+                result = self._probe_microphone()
+            except Exception:
+                log.exception("microphone probe failed")
+                result = {"ok": False, "code": "mic_busy", "device": None, "inputs": []}
+            self._send_reply(rid, result=result)
+
+        self._background(job, rid)
+        return None
+
+    def _set_key(self, rid: int | None, key: object) -> None:
+        """Wizard step 6: store the Groq key in the Credential Manager.
+
+        The key exists in this method as a parameter and nowhere else: it is
+        never logged, never echoed back in the reply, never put into an
+        exception message. The reply says «stored», and a later ``get_config``
+        says «has_groq_key» — presence, never the value (spec §13).
+        """
+        if not isinstance(key, str) or not key.strip():
+            self._send_reply(rid, error="bad_key")
+            return None
+        if self._write_groq_key is None:
+            self._send_reply(rid, error="unavailable")
+            return None
+        try:
+            self._write_groq_key(key.strip())
+        except Exception:
+            # No exc_info: a credential-write failure can carry the value in
+            # its arguments, and this line goes to a file (spec §13).
+            log.warning("storing the API key failed")
+            self._send_reply(rid, error="store_failed")
+            return None
+        log.info("api key stored")
+        self._send_reply(rid, result={"stored": True})
+        return None
+
+    def _test_key(self, rid: int | None) -> None:
+        """Wizard step 6, «проверка запросом»: ask Groq whether the stored key
+        is any good. Answers a status word, never a payload."""
+        if self._check_groq_key is None:
+            self._send_reply(rid, error="unavailable")
+            return None
+
+        def job() -> None:
+            try:
+                status = self._check_groq_key()
+            except Exception:
+                log.exception("key check failed")
+                status = "network"
+            self._send_reply(rid, result={"status": status})
+
+        self._background(job, rid)
+        return None
+
+    def _autostart_set(self, rid: int | None, enabled: object) -> dict[str, Any] | None:
+        """Spec §12's switch. Registry writes are microseconds, so this one
+        stays on the read thread; the state that comes back is re-read, not
+        assumed — Windows may have vetoed us (StartupApproved)."""
+        if not isinstance(enabled, bool):
+            return reply(rid, error="bad_value") if rid is not None else None
+        state = set_autostart(enabled)
+        log.info("autostart set to %s → %s", enabled, state.enabled)
+        return self._reply_frame(rid, state.as_wire())
 
     # ------------------------------------------------------------------ #
     # dictionary

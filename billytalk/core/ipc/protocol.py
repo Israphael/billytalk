@@ -62,7 +62,9 @@ UI_TO_CORE: Final = frozenset({
     "history_search", "history_insert", "history_export",
     "dictionary_get", "dictionary_set",
     "capture_hotkey_start", "capture_hotkey_stop",
-    "test_key", "toggle_dictation", "shutdown",
+    "mic_probe", "set_key", "test_key",
+    "autostart_get", "autostart_set",
+    "toggle_dictation", "shutdown",
     "menu_model",
 })
 

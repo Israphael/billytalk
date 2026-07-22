@@ -50,6 +50,15 @@ class Config:
 
     schema_version: int = CONFIG_SCHEMA_VERSION
     language: str = "ru"
+    ui_language: str = "auto"
+    """Language of the windows and notifications: ``auto`` (follow Windows),
+    ``ru`` or ``en``. Separate from ``language`` on purpose — dictating in
+    English from a Russian interface is an ordinary day, not a contradiction.
+    Additive within schema_version 1; see ``core/ui_language.py``."""
+    wizard_done: bool = False
+    """Whether the first-run wizard (spec §12) has been walked to its end.
+    False on a fresh config, which is exactly the «первый запуск» signal — the
+    core raises the interface into the wizard instead of waiting to be asked."""
     ptt_code: int = DEFAULT_PTT_CODE
     retention_minutes: int = 60
     max_hold_ms: int = 5 * 60 * 1000

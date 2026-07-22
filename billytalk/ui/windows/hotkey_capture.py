@@ -18,6 +18,7 @@ from typing import Any
 
 import wx
 
+from ...i18n import t
 from ..controller import UiController
 from . import dress
 
@@ -32,14 +33,12 @@ class HotkeyCaptureDialog(wx.Dialog):
         self, controller: UiController, parent: wx.Window | None = None,
         *, action: str = "ptt",
     ) -> None:
-        super().__init__(parent, title="BillyTalk — захват кнопки")
+        super().__init__(parent, title=t("capture.title"))
         self._c = controller
         self.captured: dict[str, Any] | None = None
 
         sizer = wx.BoxSizer(wx.VERTICAL)
-        prompt = wx.StaticText(
-            self, label="Нажмите кнопку мыши или клавишу для диктовки"
-        )
+        prompt = wx.StaticText(self, label=t("capture.prompt"))
         font = prompt.GetFont()
         font.SetPointSize(font.GetPointSize() + 2)
         font = font.Bold()
@@ -52,7 +51,7 @@ class HotkeyCaptureDialog(wx.Dialog):
         )
         hint.SetForegroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_GRAYTEXT))
         sizer.Add(hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 18)
-        cancel = wx.Button(self, label="Отмена")
+        cancel = wx.Button(self, label=t("common.cancel"))
         cancel.Bind(wx.EVT_BUTTON, lambda _e: self._cancel())
         sizer.Add(cancel, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
         self.SetSizerAndFit(sizer)
