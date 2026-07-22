@@ -533,6 +533,7 @@ class Driver:
         # silent VERIFY_IMPOSSIBLE (spec §8) — the report's word is final.
         if isinstance(cause, InsertOk) and dictation.last_insert_status is not None:
             status = dictation.last_insert_status
+            self._cue_unverifiable_delivery(status, dictation)
         if status is DeliveryStatus.CANCELLED:
             # OPEN-QUESTIONS §5: no CancelTranscribe verb exists; the mark is
             # what a late transcription result checks before delivering.
@@ -642,6 +643,33 @@ class Driver:
             )
             dictation.last_insert_failure = failure
             self.post(InsertFailed(seq, code=failure.code))
+
+    def _cue_unverifiable_delivery(
+        self, status: DeliveryStatus, dictation: _DictationState
+    ) -> None:
+        """Say «текст в буфере» where the paste can never be confirmed.
+
+        Spec §8 makes ``verify_impossible`` silent, and in an ordinary window
+        that is right: the paste almost always lands, and a chime after every
+        dictation would be noise. In a terminal the verifier answers
+        ``verify_impossible`` **every single time** — it draws its own screen
+        and exposes no UIA text — so silence there is indistinguishable from
+        the product not working. Which is exactly how it looked in Git Bash,
+        where the chord was wrong too: 175 transcribed characters, no text on
+        screen, and not a sound (customer's report, 22.07).
+
+        The quiet clipboard cue, only where the rule says verification is
+        structurally impossible. Customer's decision — OPEN-QUESTIONS §40.
+        """
+        if status is not DeliveryStatus.VERIFY_IMPOSSIBLE:
+            return
+        target = dictation.target
+        rule = rule_for(
+            getattr(target, "process_name", None),
+            getattr(target, "window_class", None),
+        )
+        if not rule.verifiable:
+            self.deps.play_cue(Cue.CLIPBOARD)
 
     def _record_transcription_row(self, dictation: _DictationState) -> None:
         result = dictation.result

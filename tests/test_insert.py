@@ -364,3 +364,77 @@ def test_uncomparable_capture_still_pastes() -> None:
     assert report.ok
     assert fake.chords == [PasteChord.CTRL_V]
     assert verifier.baseline_hwnds == [0x333]
+
+
+# --------------------------------------------------------------------------- #
+# Git Bash (mintty) — the customer's first live bug, 22.07
+# --------------------------------------------------------------------------- #
+
+
+def test_mintty_gets_shift_insert_not_ctrl_shift_v() -> None:
+    """MEASURED on the customer's machine: in Git Bash's mintty Ctrl+Shift+V
+    does nothing, Shift+Insert pastes. mintty had been filed under «modern
+    terminal» by extrapolation — the spec's own table never named it — and a
+    chord that never lands plus an outcome that says nothing about it is how
+    dictation into Git Bash came to look like a product that does not work."""
+    from billytalk.core.insert.apprules import PasteChord, rule_for
+
+    for process, window_class in (("mintty.exe", "mintty"),
+                                  ("mintty.exe", None),
+                                  (None, "mintty")):
+        rule = rule_for(process, window_class)
+        assert rule.paste is PasteChord.SHIFT_INSERT, (process, window_class)
+        assert rule.newline_to_space, "a newline into a live SSH session executes"
+        assert not rule.press_enter_allowed
+
+
+def test_terminals_are_marked_unverifiable_and_ordinary_windows_are_not() -> None:
+    """A terminal draws its own screen and exposes no UIA text, so the verifier
+    answers verify_impossible every time — not occasionally. The flag is what
+    lets the driver break spec §8's silence exactly there."""
+    from billytalk.core.insert.apprules import rule_for
+
+    for process, window_class in (
+        ("mintty.exe", "mintty"),
+        ("cmd.exe", "ConsoleWindowClass"),
+        ("windowsterminal.exe", "CASCADIA_HOSTING_WINDOW_CLASS"),
+        ("putty.exe", None),
+    ):
+        assert not rule_for(process, window_class).verifiable, (process, window_class)
+
+    for process, window_class in (("notepad.exe", "Notepad"),
+                                  ("chrome.exe", "Chrome_WidgetWin_1"),
+                                  (None, None)):
+        assert rule_for(process, window_class).verifiable, (process, window_class)
+
+
+def test_the_paste_chord_sender_knows_all_three_shapes() -> None:
+    """VK codes, no scancodes (spec §8: survives Cyrillic, AZERTY, Dvorak)."""
+    import ctypes as ct
+
+    from billytalk.core.insert import inserter as inserter_module
+    from billytalk.core.insert.apprules import PasteChord
+
+    sent: list[list[tuple[int, int]]] = []
+
+    class FakeUser32:
+        def SendInput(self, count: int, events, size: int) -> int:
+            sent.append([(events[i].ki.wVk, events[i].ki.dwFlags) for i in range(count)])
+            return count
+
+    real = inserter_module._user32
+    inserter_module._user32 = FakeUser32()  # type: ignore[assignment]
+    try:
+        for chord in PasteChord:
+            inserter_module.send_paste_chord(chord)
+    finally:
+        inserter_module._user32 = real  # type: ignore[assignment]
+
+    ctrl_v, ctrl_shift_v, shift_insert = sent
+    assert [vk for vk, flags in ctrl_v if not flags] == [0x11, 0x56]
+    assert [vk for vk, flags in ctrl_shift_v if not flags] == [0x11, 0x10, 0x56]
+    assert [vk for vk, flags in shift_insert if not flags] == [0x10, 0x2D]
+    for events in sent:
+        downs = [vk for vk, flags in events if not flags]
+        ups = [vk for vk, flags in events if flags]
+        assert ups == list(reversed(downs)), "every key released, in reverse order"

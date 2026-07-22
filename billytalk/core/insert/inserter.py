@@ -66,6 +66,7 @@ _VK_MENU: Final = 0x12
 _VK_LWIN: Final = 0x5B
 _VK_RWIN: Final = 0x5C
 _VK_V: Final = 0x56
+_VK_INSERT: Final = 0x2D
 _MODIFIERS: Final = (_VK_SHIFT, _VK_CONTROL, _VK_MENU, _VK_LWIN, _VK_RWIN)
 
 _KEYEVENTF_KEYUP: Final = 0x0002
@@ -93,11 +94,21 @@ class _INPUT(ct.Structure):
 
 
 def send_paste_chord(chord: PasteChord) -> None:
-    """Ctrl(+Shift)+V by VK code, marked as our own synthetic input."""
-    keys = [_VK_CONTROL]
-    if chord is PasteChord.CTRL_SHIFT_V:
-        keys.append(_VK_SHIFT)
-    keys.append(_VK_V)
+    """The target's own paste chord, by VK code, marked as our synthetic input.
+
+    Three of them, because terminals do not agree: Ctrl+V for ordinary windows
+    and legacy conhost, Ctrl+Shift+V for Windows Terminal and modern PuTTY,
+    Shift+Insert for mintty — measured there rather than assumed, because Git
+    Bash ignores Ctrl+Shift+V outright. VK codes without KEYEVENTF_SCANCODE, so
+    the chord survives Cyrillic, AZERTY and Dvorak (spec §8).
+    """
+    if chord is PasteChord.SHIFT_INSERT:
+        keys = [_VK_SHIFT, _VK_INSERT]
+    else:
+        keys = [_VK_CONTROL]
+        if chord is PasteChord.CTRL_SHIFT_V:
+            keys.append(_VK_SHIFT)
+        keys.append(_VK_V)
 
     sequence = keys + [-k for k in reversed(keys)]  # downs, then ups in reverse
     events = (_INPUT * len(sequence))()

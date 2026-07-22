@@ -529,6 +529,29 @@ def test_verify_impossible_lands_in_the_row_and_stays_silent(tmp_path: Path) -> 
     assert world.driver.state.phase is Phase.Idle
 
 
+def test_verify_impossible_in_a_terminal_says_so_quietly(tmp_path: Path) -> None:
+    """The customer's first live bug, 22.07: dictating into Git Bash gave 175
+    transcribed characters, no text on screen and not a sound. In a terminal
+    the verifier CANNOT confirm a paste — it answers verify_impossible every
+    single time — so spec §8's silence there is indistinguishable from a broken
+    product. The quiet clipboard cue, only where the rule says verification is
+    structurally impossible (customer's decision, OPEN-QUESTIONS §40)."""
+    world = build_world(tmp_path, outcomes=[FakeProvider.ok("текст в терминал")])
+    world.driver.deps.capture_target = lambda: SimpleNamespace(  # type: ignore[assignment]
+        hwnd=0x222, focus_hwnd=0x222, process_name="mintty.exe",
+        window_class="mintty", secure=False, elevated=False,
+    )
+    world.inserter.reports.append(
+        InsertReport(ok=True, status=DeliveryStatus.VERIFY_IMPOSSIBLE)
+    )
+    dictate(world)
+    world.run_jobs()
+
+    assert world.row()["delivery_status"] == "verify_impossible"
+    assert Cue.CLIPBOARD in world.cues, "the user must know the text is on the clipboard"
+    assert world.notices == [], "a cue, not an error: nothing failed as far as we know"
+
+
 def test_the_inserter_receives_the_prepared_text_as_the_needle(tmp_path: Path) -> None:
     """What verification searches for must be exactly what the clipboard got —
     the post-prepare_text text, newline flattening included."""
