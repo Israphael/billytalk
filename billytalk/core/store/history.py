@@ -20,6 +20,7 @@ table's lifetime. Rows are addressed by ``id``; the driver keeps its own
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 from dataclasses import dataclass
@@ -27,6 +28,8 @@ from pathlib import Path
 from typing import Final
 
 from ..machine.effects import DeliveryStatus
+
+log = logging.getLogger("billytalk.store")
 
 __all__ = [
     "CleanupGate",
@@ -415,6 +418,52 @@ class HistoryStore:
             _remove_quietly(row["audio_path"])
             released.append(row["audio_path"])
         return released
+
+    def clear_all(self, audio_dir: Path | None = None) -> tuple[int, int]:
+        """Spec §13's «действие "очистить историю и аудио"». Returns
+        ``(rows_deleted, files_deleted)``.
+
+        The one place in the product that deletes text on purpose. Everywhere
+        else «текст хранится бессрочно» (spec §10) — which is exactly why this
+        action has to exist and has to be complete: a safety net the user
+        cannot empty is a safety net they cannot trust with anything private.
+
+        Order, for the same reason ``cleanup`` has one: rows go inside the
+        transaction, files after. A crash in between leaves orphaned audio,
+        which the startup sweep collects; the reverse order would leave rows
+        pointing at files that are gone.
+
+        ``secure_delete=ON`` (db.py) means the deleted pages are zeroed rather
+        than merely unlinked, so the transcripts do not linger in the file's
+        free space. The ``VACUUM`` afterwards is housekeeping on top of that —
+        best effort, because a reader (the services' read-only connection) can
+        hold it off, and a database that stayed a few pages larger is not a
+        privacy failure.
+        """
+        rows = self._conn.execute(
+            "SELECT audio_path FROM history WHERE audio_path IS NOT NULL"
+        ).fetchall()
+        with self._conn:
+            (count,) = self._conn.execute("SELECT COUNT(*) FROM history").fetchone()
+            # The AFTER DELETE trigger keeps the external-content FTS index in
+            # step; deleting from history_fts directly would silently do
+            # nothing (db.py says so at the schema).
+            self._conn.execute("DELETE FROM history")
+        files = 0
+        for row in rows:
+            path = row["audio_path"]
+            if path:
+                _remove_quietly(path)
+                files += 1
+        if audio_dir is not None:
+            # Anything the rows did not know about goes too: this action
+            # promises «и аудио», not «аудио, о котором есть запись».
+            files += len(self.sweep_orphan_audio(audio_dir))
+        try:
+            self._conn.execute("VACUUM")
+        except sqlite3.Error:
+            log.info("vacuum after clear skipped; a reader holds the database")
+        return int(count), files
 
     def sweep_orphan_audio(self, audio_dir: Path) -> list[Path]:
         """Startup GC (spec §3): a file no row points at is deleted.

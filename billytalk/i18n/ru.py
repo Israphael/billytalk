@@ -108,12 +108,16 @@ STRINGS: Final[dict[str, str]] = {
     "settings.mic.device": "Устройство записи",
     "settings.mic.hint": "Список обновляется при подключении и отключении устройств",
     "settings.mic.check": "Проверить",
+    "settings.mic.ranked":
+        "Если выбранного устройства нет на месте, BillyTalk сам возьмёт системное "
+        "по умолчанию — диктовка не срывается из-за выдернутой гарнитуры.",
     "settings.mic.checking": "Проверяю…",
 
     "settings.language": "Язык диктовки",
     "settings.language.hint": "Определяется явно, не автоматически",
     "settings.key": "Ключ API",
-    "settings.key.hint": "Диспетчер учётных данных Windows, не в файлах",
+    "settings.key.hint":
+        "Хранится в диспетчере учётных данных Windows, в файлы не записывается",
     "settings.key.saved": "Сохранён",
     "settings.key.missing": "Не сохранён",
     "settings.key.replace": "Заменить…",
@@ -146,6 +150,16 @@ STRINGS: Final[dict[str, str]] = {
     "settings.about.data": "Данные",
     "settings.about.data.hint": "История и аудио на этом компьютере",
     "settings.about.data.clear": "Очистить историю…",
+    "clear.title": "Очистить историю и аудио",
+    "clear.body":
+        "Будут удалены НАВСЕГДА: все расшифровки, все записи истории и все "
+        "аудиофайлы на этом компьютере. Восстановить их будет нельзя.",
+    "clear.stays":
+        "Останутся: настройки, словарь и ключ Groq в диспетчере учётных данных.",
+    "clear.confirm": "Удалить всё",
+    "clear.busy": "Идёт диктовка — подождите её окончания и повторите.",
+    "clear.failed": "Не удалось очистить историю.",
+    "clear.done": "Удалено записей: {rows}, аудиофайлов: {files}.",
     "settings.about.data.soon": "Появится вместе с окном подтверждения",
     "settings.about.wizard": "Мастер первого запуска",
     "settings.about.wizard.hint": "Микрофон, кнопка, ключ и проверка — по шагам",

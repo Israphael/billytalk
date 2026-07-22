@@ -80,6 +80,8 @@ class FakeController:
     def __init__(self, replies: dict[str, Any]) -> None:
         self.replies = replies
         self.sent: list[dict[str, Any]] = []
+        self.on_devices = None
+        self.apply_language = None
 
     def request(self, message: dict[str, Any], on_reply) -> None:
         self.sent.append(message)
@@ -123,7 +125,7 @@ def test_settings_frame_fills_from_the_core_replies(wx_app) -> None:
         assert frame._rules_list.GetItemCount() == 1
         assert frame._rules_list.GetItemText(0, 1) == "прот"
         assert [m["type"] for m in fake.sent] == [
-            "get_config", "dictionary_get", "autostart_get",
+            "get_config", "dictionary_get", "autostart_get", "audio_devices",
         ]
     finally:
         frame.Destroy()
@@ -582,3 +584,83 @@ def test_release_test_does_not_steal_another_wizards_seat(wx_app) -> None:
         if second:
             second.Destroy()
         first.Destroy()
+
+
+def test_settings_microphone_list_offers_the_system_default_first(wx_app) -> None:
+    """Spec §5's ranked pick: index 0 is «system default», which the config
+    spells as None — the same value the fallback lands on when a chosen device
+    disappears, so the two agree by construction."""
+    from billytalk.ui.windows.settings import SettingsFrame
+
+    config = {"config": {**_CONFIG_REPLY["config"], "audio_input_device": "Realtek"}}
+    fake = FakeController({
+        "get_config": config,
+        "dictionary_get": _RULES_REPLY,
+        "audio_devices": {"inputs": ["Микрофон (USB)", "Realtek"]},
+    })
+    frame = SettingsFrame(fake)  # type: ignore[arg-type]
+    try:
+        assert frame._mic_choice.GetString(0) == "Системный по умолчанию"
+        assert frame._mic_choice.GetStringSelection() == "Realtek"
+
+        frame._mic_choice.SetSelection(0)
+        frame._on_mic_choice(None)  # type: ignore[arg-type]
+        patch = next(m for m in reversed(fake.sent) if m["type"] == "set_config")
+        assert patch["patch"] == {"audio_input_device": None}
+
+        frame._mic_choice.SetSelection(1)
+        frame._on_mic_choice(None)  # type: ignore[arg-type]
+        patch = next(m for m in reversed(fake.sent) if m["type"] == "set_config")
+        assert patch["patch"] == {"audio_input_device": "Микрофон (USB)"}
+    finally:
+        frame.Destroy()
+
+
+def test_settings_updates_the_device_list_on_the_push(wx_app) -> None:
+    """A headset plugged in with the window open changes the list here and
+    now — the core pushes device_list_changed for exactly this."""
+    from billytalk.ui.windows.settings import SettingsFrame
+
+    fake = FakeController({
+        "get_config": _CONFIG_REPLY, "dictionary_get": _RULES_REPLY,
+        "audio_devices": {"inputs": ["Realtek"]},
+    })
+    frame = SettingsFrame(fake)  # type: ignore[arg-type]
+    try:
+        assert fake.on_devices is not None, "the window takes the seat"
+        assert frame._mic_choice.GetCount() == 2
+        fake.on_devices(["Realtek", "Гарнитура Bluetooth"])
+        assert frame._mic_choice.GetCount() == 3
+        assert frame._mic_choice.GetString(2) == "Гарнитура Bluetooth"
+    finally:
+        frame.Destroy()
+    wx.Yield()
+    # A push arriving after the window died must not touch its controls.
+    if fake.on_devices is not None:
+        fake.on_devices(["Realtek"])
+
+
+def test_settings_hints_wrap_instead_of_being_clipped(wx_app) -> None:
+    """The grey sub-labels are where the window explains itself («что попадает
+    в журнал», «что Windows решает за нас»); the control on the right takes
+    its natural width, so an unwrapped hint was cut mid-sentence. The dynamic
+    one — autostart — must survive SetLabel too, which discards wrapping."""
+    from billytalk.ui.windows.settings import _HINT_WRAP, SettingsFrame
+
+    fake = FakeController({"get_config": _CONFIG_REPLY, "dictionary_get": _RULES_REPLY})
+    frame = SettingsFrame(fake)  # type: ignore[arg-type]
+    try:
+        hint = frame._autostart_hint
+        assert hint is not None
+        for state in (
+            {"available": True, "enabled": False, "disabled_by_windows": True},
+            {"available": False, "enabled": False, "disabled_by_windows": False},
+            {"available": True, "enabled": True, "disabled_by_windows": False},
+        ):
+            frame._on_autostart({"type": "reply", "id": 0, "result": state})
+            assert hint.GetSize().width <= _HINT_WRAP + 8, (
+                f"the hint runs past its column: {hint.GetLabel()!r}"
+            )
+            assert hint.GetLabel(), "and it still says something"
+    finally:
+        frame.Destroy()

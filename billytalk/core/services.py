@@ -59,6 +59,7 @@ SERVICE_VERBS: Final = frozenset({
     "capture_hotkey_start", "capture_hotkey_stop",
     "mic_probe", "set_key", "test_key",
     "autostart_get", "autostart_set",
+    "audio_devices", "history_clear",
 })
 
 _SEARCH_CAP: Final = 200
@@ -136,6 +137,8 @@ class UiServices:
         probe_microphone: Callable[[], dict[str, Any]] | None = None,
         write_groq_key: Callable[[str], None] | None = None,
         check_groq_key: Callable[[], str] | None = None,
+        list_input_devices: Callable[[], list[str]] | None = None,
+        clear_history: Callable[[], tuple[int, int]] | None = None,
     ) -> None:
         self._config = config
         self._config_path = config_path
@@ -157,6 +160,8 @@ class UiServices:
         self._probe_microphone = probe_microphone
         self._write_groq_key = write_groq_key
         self._check_groq_key = check_groq_key
+        self._list_input_devices = list_input_devices
+        self._clear_history = clear_history
         self._ro_lock = threading.Lock()
         self._ro_conn: sqlite3.Connection | None = None
 
@@ -189,6 +194,13 @@ class UiServices:
             return self._set_key(rid, message.get("key"))
         if kind == "test_key":
             return self._test_key(rid)
+        if kind == "audio_devices":
+            return self._reply_frame(rid, {
+                "inputs": list(self._list_input_devices())
+                if self._list_input_devices is not None else [],
+            })
+        if kind == "history_clear":
+            return self._history_clear(rid)
         if kind == "autostart_get":
             return self._reply_frame(rid, autostart_state().as_wire())
         if kind == "autostart_set":
@@ -353,6 +365,31 @@ class UiServices:
             self._send_reply(rid, result={"status": status})
 
         self._background(job, rid)
+        return None
+
+    def _history_clear(self, rid: int | None) -> None:
+        """Spec §13's «очистить историю и аудио» — the one deliberate delete.
+
+        On the driver thread, like every other write: it owns the SQLite
+        connection, and riding ``post_job`` also serialises the delete with
+        delivery, so a dictation cannot be half-written into a table being
+        emptied underneath it.
+        """
+        if self._clear_history is None:
+            self._send_reply(rid, error="unavailable")
+            return None
+
+        def job() -> None:
+            try:
+                rows, files = self._clear_history()
+            except Exception:
+                log.exception("history clear failed")  # counts only, no text
+                self._send_reply(rid, error="clear_failed")
+                return
+            log.info("history cleared: %d rows, %d audio files", rows, files)
+            self._send_reply(rid, result={"rows": rows, "files": files})
+
+        self._post_job(job)
         return None
 
     def _autostart_set(self, rid: int | None, enabled: object) -> dict[str, Any] | None:

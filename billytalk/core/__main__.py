@@ -382,6 +382,18 @@ def main() -> int:
         # carries the value (spec §13).
         secrets.write_secret(secrets.TARGET_GROQ, key)
 
+    def clear_history() -> tuple[int, int]:
+        """Spec §13's «очистить историю и аудио», on the driver thread.
+
+        Refuses while anything is in flight: deleting the row of a dictation
+        that is still being written would lose words the user just spoke — the
+        one thing this product may never do. «Очистить» means the history as it
+        stands, not one that is still growing.
+        """
+        if driver.state.phase.name != "Idle" or driver.state.queue:
+            raise RuntimeError("a dictation is in flight")
+        return store.clear_all(audio_dir)
+
     services = UiServices(
         config=config,
         config_path=roaming / "config.json",
@@ -403,6 +415,12 @@ def main() -> int:
         probe_microphone=probe_microphone,
         write_groq_key=write_groq_key,
         check_groq_key=provider.check_key,
+        # The cache, not a fresh enumeration: listing devices means touching
+        # PortAudio, and this verb answers on the read thread while a reload
+        # may be dlclose-ing the library. The cache is refreshed by the very
+        # event that would invalidate it (WM_DEVICECHANGE → reload_devices).
+        list_input_devices=lambda: list(device_names_cache),
+        clear_history=clear_history,
     )
     router = UiMessageRouter(
         post=driver.post,

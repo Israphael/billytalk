@@ -64,6 +64,7 @@ UI_TO_CORE: Final = frozenset({
     "capture_hotkey_start", "capture_hotkey_stop",
     "mic_probe", "set_key", "test_key",
     "autostart_get", "autostart_set",
+    "audio_devices", "history_clear",
     "toggle_dictation", "shutdown",
     "menu_model",
 })

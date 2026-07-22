@@ -480,3 +480,63 @@ def test_secret_roundtrip_against_the_real_credential_manager() -> None:
         secrets.delete_secret(target)
     assert secrets.read_secret(target) is None
     secrets.delete_secret(target)  # deleting the absent is success, not an error
+
+
+# --------------------------------------------------------------------------- #
+# the deliberate delete (spec §13)
+# --------------------------------------------------------------------------- #
+
+
+def test_clear_all_removes_rows_audio_and_the_search_index(tmp_path) -> None:
+    """Spec §13's «очистить историю и аудио». Everywhere else text is forever
+    (spec §10) — which is exactly why this action must be complete: a safety
+    net the user cannot empty is one they cannot trust with anything private."""
+    from billytalk.core.store.db import connect, ensure_schema
+    from billytalk.core.store.history import HistoryStore
+
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    conn = connect(tmp_path / "history.db")
+    ensure_schema(conn)
+    store = HistoryStore(conn)
+
+    kept_words = "секретная фраза про прод"
+    for index in range(3):
+        clip = audio_dir / f"clip{index}.flac"
+        clip.write_bytes(b"fLaC")
+        row_id = store.add(
+            seq=index, created_at=1_700_000_000_000 + index, now=1_700_000_000_000,
+            duration_ms=1000, status=DeliveryStatus.PENDING_TRANSCRIBE,
+            audio_path=str(clip),
+        )
+        store.record_transcription(
+            row_id, text_raw=kept_words, text_final=kept_words, language="ru",
+            provider_id="groq", billed_seconds=1.0, latency_ms=100,
+        )
+    orphan = audio_dir / "nobody-points-here.flac"
+    orphan.write_bytes(b"fLaC")
+
+    assert store.search(kept_words), "the text is findable before"
+
+    rows, files = store.clear_all(audio_dir)
+
+    assert rows == 3
+    assert files == 4, "three referenced clips plus the orphan"
+    assert list(audio_dir.iterdir()) == [], "«и аудио» means all of it"
+    assert store.recent() == []
+    assert store.search(kept_words) == [], "the FTS index went with the rows"
+    assert store.last_shown() is None
+    # The table still works afterwards — this is a clear, not a teardown.
+    store.add(seq=9, created_at=1_700_000_100_000, now=1_700_000_100_000,
+              duration_ms=500, status=DeliveryStatus.PENDING_TRANSCRIBE,
+              audio_path=None)
+    assert len(store.recent()) == 1
+
+
+def test_clear_all_on_an_empty_history_is_a_no_op(tmp_path) -> None:
+    from billytalk.core.store.db import connect, ensure_schema
+    from billytalk.core.store.history import HistoryStore
+
+    conn = connect(tmp_path / "history.db")
+    ensure_schema(conn)
+    assert HistoryStore(conn).clear_all(tmp_path / "missing-audio-dir") == (0, 0)

@@ -11,9 +11,10 @@ read once at build time, and tracking every static control for a live relabel
 is exactly the kind of bookkeeping that leaves half a window in the old
 language after the next edit.
 
-What is greyed out is greyed honestly: the plashka switch waits on the first
-Ctrl+Alt+Z (spec §11), clearing the history waits on its confirmation window.
-Autostart and the key are live as of cycle 3.
+What is greyed out is greyed honestly, and by cycle 3 there is only one left:
+the plashka switch, which spec §11 keeps disabled until the user has used
+Ctrl+Alt+Z at least once — until then the plashka is their only feedback
+channel. Everything else on these pages does what it says.
 """
 
 from __future__ import annotations
@@ -48,6 +49,12 @@ _RULE_TYPES = (
     ("replace", "settings.rule.type.replace"),
 )
 
+_HINT_WRAP = 280
+"""Pixels a row's grey sub-label may take before it wraps. Measured, not
+guessed: the window is 840 wide, the navigation list takes ~170, and the
+widest control on the right (the device list plus its Test button) ~320,
+which leaves the text column just under 300."""
+
 
 def binding_label(code: int) -> str:
     """The human name of a unified-space key code (spec §2): mouse codes are
@@ -63,6 +70,7 @@ class SettingsFrame(wx.Frame):
         self._c = controller
         self._config: dict[str, Any] = {}
         self._rules: list[dict[str, Any]] = []
+        self._devices: list[str] = []
 
         root = wx.Panel(self)
         self._nav = wx.ListBox(root, choices=[t(key) for key in _SECTION_KEYS])
@@ -81,7 +89,24 @@ class SettingsFrame(wx.Frame):
         root.SetSizer(sizer)
         self.CreateStatusBar()
         dress(self)
+        # A device plugged in while this window is open changes the list here
+        # and now. The seat is given up on close, and the handler checks it is
+        # still alive besides — apply_language destroys this window without a
+        # close event.
+        self._c.on_devices = self._on_devices_push
+        self.Bind(wx.EVT_CLOSE, self._on_close)
         self.refresh()
+
+    def _on_close(self, event: wx.CloseEvent) -> None:
+        if self._c.on_devices == self._on_devices_push:
+            self._c.on_devices = None
+        event.Skip()
+
+    def _on_devices_push(self, inputs: list[Any]) -> None:
+        if not self:  # destroyed: wx windows go falsy, the push is not ours
+            return
+        self._devices = [str(name) for name in inputs]
+        self._fill_devices()
 
     # ------------------------------------------------------------------ #
     # data flow
@@ -91,6 +116,26 @@ class SettingsFrame(wx.Frame):
         self._c.request({"type": "get_config"}, self._on_config)
         self._c.request({"type": "dictionary_get"}, self._on_rules)
         self._c.request({"type": "autostart_get"}, self._on_autostart)
+        self._c.request({"type": "audio_devices"}, self._on_devices)
+
+    def _on_devices(self, frame: dict[str, Any]) -> None:
+        """The recording devices the core can see (spec §5).
+
+        The list is the core's cache, refreshed by the very event that
+        invalidates it — a device change — which is also what pushes
+        ``device_list_changed`` here, so plugging a headset in with this window
+        open updates it without a reopen.
+        """
+        if "error" in frame:
+            return
+        self._devices = [str(name) for name in frame["result"].get("inputs", [])]
+        self._fill_devices()
+
+    def _fill_devices(self) -> None:
+        chosen = self._config.get("audio_input_device")
+        self._mic_choice.Set([t("common.system_default"), *self._devices])
+        index = self._devices.index(chosen) + 1 if chosen in self._devices else 0
+        self._mic_choice.SetSelection(index)
 
     def _on_config(self, frame: dict[str, Any]) -> None:
         if "error" in frame:
@@ -124,13 +169,14 @@ class SettingsFrame(wx.Frame):
         self._autostart.SetValue(bool(state.get("enabled")))
         self._autostart.Enable(bool(state.get("available")))
         if not state.get("available"):
-            self._autostart_hint.SetLabel(t("settings.autostart.unavailable"))
+            _rehint(self._autostart_hint, t("settings.autostart.unavailable"))
         elif state.get("disabled_by_windows"):
             # Spec §12: Windows' own Startup page wins and we say so instead of
             # quietly re-enabling ourselves behind the user's back.
-            self._autostart_hint.SetLabel(t("settings.autostart.disabled_by_windows"))
+            _rehint(self._autostart_hint, t("settings.autostart.disabled_by_windows"))
         else:
-            self._autostart_hint.SetLabel(t("settings.autostart.hint"))
+            _rehint(self._autostart_hint, t("settings.autostart.hint"))
+        self.Layout()
 
     def _patch(self, key: str, value: Any) -> None:
         self._c.request({"type": "set_config", "patch": {key: value}}, self._on_config)
@@ -154,6 +200,12 @@ class SettingsFrame(wx.Frame):
         hint = None
         if sub:
             hint = wx.StaticText(parent, label=sub)
+            # Wrap, do not clip. The control on the right takes its natural
+            # width, so a long hint used to be cut mid-sentence — and these
+            # hints are where the window explains itself («что попадает в
+            # журнал», «что Windows решает за нас»). Short ones are untouched:
+            # Wrap only breaks a line that is actually too long.
+            hint.Wrap(_HINT_WRAP)
             hint.SetForegroundColour(
                 wx.SystemSettings.GetColour(wx.SYS_COLOUR_GRAYTEXT)
             )
@@ -221,11 +273,24 @@ class SettingsFrame(wx.Frame):
     def _page_mic(self, parent: wx.Window) -> wx.Panel:
         page = wx.Panel(parent)
         sizer = wx.BoxSizer(wx.VERTICAL)
-        self._mic_label = wx.StaticText(page, label=t("common.system_default"))
-        check = wx.Button(page, label=t("settings.mic.check"))
+        # Device slot: the list and the test button, both in one panel so the
+        # row keeps its single-control shape (see the key row for the same).
+        slot = wx.Panel(page)
+        self._mic_choice = wx.Choice(slot, choices=[t("common.system_default")])
+        self._mic_choice.SetSelection(0)
+        self._mic_choice.Bind(wx.EVT_CHOICE, self._on_mic_choice)
+        check = wx.Button(slot, label=t("settings.mic.check"))
         check.Bind(wx.EVT_BUTTON, self._on_mic_check)
-        self._row(page, sizer, t("settings.mic.device"), t("settings.mic.hint"), check)
-        sizer.Add(self._mic_label, 0, wx.LEFT | wx.BOTTOM, 8)
+        line = wx.BoxSizer(wx.HORIZONTAL)
+        line.Add(self._mic_choice, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        line.Add(check, 0)
+        slot.SetSizer(line)
+        line.Fit(slot)
+        self._row(page, sizer, t("settings.mic.device"), t("settings.mic.hint"), slot)
+        ranked = wx.StaticText(page, label=t("settings.mic.ranked"))
+        ranked.Wrap(560)
+        ranked.SetForegroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_GRAYTEXT))
+        sizer.Add(ranked, 0, wx.LEFT | wx.BOTTOM | wx.RIGHT, 8)
         page.SetSizer(sizer)
         return page
 
@@ -301,8 +366,7 @@ class SettingsFrame(wx.Frame):
         self._row(page, sizer, t("settings.about.wizard"),
                   t("settings.about.wizard.hint"), wizard)
         clear = wx.Button(page, label=t("settings.about.data.clear"))
-        clear.Disable()
-        clear.SetToolTip(t("settings.about.data.soon"))
+        clear.Bind(wx.EVT_BUTTON, self._on_clear_history)
         self._row(page, sizer, t("settings.about.data"), t("settings.about.data.hint"),
                   clear)
         page.SetSizer(sizer)
@@ -355,6 +419,14 @@ class SettingsFrame(wx.Frame):
             self._on_autostart,
         )
 
+    def _on_mic_choice(self, _event: wx.CommandEvent) -> None:
+        index = self._mic_choice.GetSelection()
+        # Index 0 is «system default», which the config spells as None — and
+        # None is also what the ranked fallback lands on when a chosen device
+        # disappears (spec §5), so the two agree by construction.
+        device = self._devices[index - 1] if 0 < index <= len(self._devices) else None
+        self._patch("audio_input_device", device)
+
     def _on_mic_check(self, event: wx.CommandEvent) -> None:
         self._mic_check = event.GetEventObject()
         self._mic_check.Disable()
@@ -400,6 +472,42 @@ class SettingsFrame(wx.Frame):
         wizard.Show()
         wizard.Raise()
 
+    def _on_clear_history(self, _event: wx.CommandEvent) -> None:
+        """Spec §13's clear action, behind a confirmation that says what goes.
+
+        The whole product exists because the history is a safety net (Wispr
+        Flow lesson 3), so this is the one button that destroys the user's
+        words on purpose. The dialog names what is deleted, names what is
+        kept, and its affirmative button says «Удалить всё» rather than «ОК» —
+        nobody has ever regretted reading a verb.
+        """
+        dialog = wx.MessageDialog(
+            self,
+            f"{t('clear.body')}\n\n{t('clear.stays')}",
+            t("clear.title"),
+            wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+        )
+        dialog.SetYesNoLabels(t("clear.confirm"), t("common.cancel"))
+        answer = dialog.ShowModal()
+        dialog.Destroy()
+        if answer != wx.ID_YES:
+            return
+        self._c.request({"type": "history_clear"}, self._on_history_cleared)
+
+    def _on_history_cleared(self, frame: dict[str, Any]) -> None:
+        if "error" in frame:
+            # The core refuses while a dictation is in flight — that is the
+            # likely error, and the actionable one.
+            self.SetStatusText(
+                t("clear.busy") if frame.get("error") == "clear_failed"
+                else t("clear.failed")
+            )
+            return
+        result = frame["result"]
+        self.SetStatusText(
+            t("clear.done", rows=result.get("rows", 0), files=result.get("files", 0))
+        )
+
     def _on_open_logs(self, _event: wx.CommandEvent) -> None:
         import os
         from pathlib import Path
@@ -424,8 +532,7 @@ class SettingsFrame(wx.Frame):
         self._ptt_label.SetLabel(
             binding_label(ptt) if isinstance(ptt, int) else t("common.dash")
         )
-        device = config.get("audio_input_device")
-        self._mic_label.SetLabel(device if device else t("common.system_default"))
+        self._fill_devices()
 
     def _fill_rules(self) -> None:
         type_labels = {code: t(key) for code, key in _RULE_TYPES}
@@ -469,6 +576,19 @@ class SettingsFrame(wx.Frame):
             rule["enabled"] = not rule.get("enabled", True)
             self._rules[index] = rule
             self._send_rules()
+
+
+def _rehint(label: wx.StaticText | None, text: str) -> None:
+    """Replace a hint's text and wrap it again.
+
+    ``SetLabel`` discards the line breaks ``Wrap`` inserted, so the autostart
+    row — the only hint that changes at runtime, and the longest of them —
+    would come back as one clipped line (the same trap the wizard's live-test
+    step fell into)."""
+    if label is None:
+        return
+    label.SetLabel(text)
+    label.Wrap(_HINT_WRAP)
 
 
 def _mic_failure_line(code: object) -> str:

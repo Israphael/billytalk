@@ -106,12 +106,15 @@ STRINGS: Final[dict[str, str]] = {
     "settings.mic.device": "Recording device",
     "settings.mic.hint": "The list refreshes when devices are plugged in or out",
     "settings.mic.check": "Test",
+    "settings.mic.ranked":
+        "If the chosen device is not there, BillyTalk falls back to the system "
+        "default by itself — an unplugged headset does not cost you a dictation.",
     "settings.mic.checking": "Testing…",
 
     "settings.language": "Dictation language",
     "settings.language.hint": "Set explicitly, not detected",
     "settings.key": "API key",
-    "settings.key.hint": "Windows Credential Manager, never a file",
+    "settings.key.hint": "Kept in the Windows Credential Manager, never written to a file",
     "settings.key.saved": "Saved",
     "settings.key.missing": "Not saved",
     "settings.key.replace": "Replace…",
@@ -143,6 +146,16 @@ STRINGS: Final[dict[str, str]] = {
     "settings.about.data": "Data",
     "settings.about.data.hint": "History and audio on this computer",
     "settings.about.data.clear": "Clear history…",
+    "clear.title": "Clear history and audio",
+    "clear.body":
+        "This deletes PERMANENTLY: every transcript, every history record and "
+        "every audio file on this computer. There is no undo.",
+    "clear.stays":
+        "Kept: settings, the dictionary, and the Groq key in the Credential Manager.",
+    "clear.confirm": "Delete everything",
+    "clear.busy": "A dictation is in flight — wait for it to finish and try again.",
+    "clear.failed": "The history could not be cleared.",
+    "clear.done": "Deleted: {rows} records, {files} audio files.",
     "settings.about.data.soon": "Arrives together with its confirmation window",
     "settings.about.wizard": "First-run wizard",
     "settings.about.wizard.hint": "Microphone, button, key and a live test — step by step",

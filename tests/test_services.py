@@ -567,3 +567,39 @@ def test_set_key_refuses_a_key_that_is_not_printable_ascii(
         assert world.sent[-1] == {"type": "reply", "id": 70, "error": "bad_key"}
     assert world.keys_written == [], "nothing reached the Credential Manager"
     assert "secret" not in caplog.text and "секрет" not in caplog.text
+
+
+def test_history_clear_runs_on_the_driver_thread_and_reports_counts(
+    world: World,
+) -> None:
+    """Spec §13's clear rides post_job like every other write: the driver owns
+    the connection, and the same lane serialises the delete with delivery."""
+    cleared: list[bool] = []
+    world.services._clear_history = lambda: (cleared.append(True), (7, 3))[-1]  # type: ignore[assignment]
+
+    assert world.services.handle("history_clear", {"id": 80}) is None
+    assert cleared == [True] and world.jobs_ran > 0
+    assert world.sent[-1]["result"] == {"rows": 7, "files": 3}
+
+
+def test_history_clear_reports_a_refusal_instead_of_pretending(world: World) -> None:
+    """The core refuses while a dictation is in flight — deleting the row of a
+    recording still being written would lose words the user just spoke."""
+    def busy() -> tuple[int, int]:
+        raise RuntimeError("a dictation is in flight")
+
+    world.services._clear_history = busy  # type: ignore[assignment]
+    world.services.handle("history_clear", {"id": 81})
+    assert world.sent[-1] == {"type": "reply", "id": 81, "error": "clear_failed"}
+
+
+def test_audio_devices_answers_from_the_cache(world: World) -> None:
+    """Listing devices must not touch PortAudio on the read thread: a reload
+    may be dlclose-ing the library at that moment (cycle-3 review, high)."""
+    world.services._list_input_devices = lambda: ["Микрофон (USB)", "Realtek"]  # type: ignore[assignment]
+    frame = world.services.handle("audio_devices", {"id": 82})
+    assert _result(frame) == {"inputs": ["Микрофон (USB)", "Realtek"]}
+
+    world.services._list_input_devices = None  # type: ignore[assignment]
+    frame = world.services.handle("audio_devices", {"id": 83})
+    assert _result(frame) == {"inputs": []}, "no collaborator is an empty list, not a crash"

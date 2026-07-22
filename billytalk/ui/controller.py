@@ -86,6 +86,10 @@ class UiController:
         self.on_hotkey_captured: Callable[[dict[str, Any]], None] | None = None
         """The capture dialog parks itself here while it is open —
         ``hotkey_captured`` is a push, not a reply, so it needs its own seat."""
+        self.on_devices: Callable[[list[Any]], None] | None = None
+        """The settings window watches the recording devices here: plugging a
+        headset in while it is open should change the list, not require a
+        reopen. ``device_list_changed`` is a push, so it needs its own seat."""
         self.on_state: Callable[[str | None], None] | None = None
         """The wizard's live-test step watches the machine here: it must know
         that a dictation happened before it asks the history for the words."""
@@ -138,6 +142,9 @@ class UiController:
         elif kind == "hotkey_captured":
             if self.on_hotkey_captured is not None:
                 self.on_hotkey_captured(message)
+        elif kind == "device_list_changed":
+            if self.on_devices is not None:
+                self.on_devices(message.get("inputs") or [])
 
     def _on_state(self, state: object) -> None:
         if self.on_state is not None:
