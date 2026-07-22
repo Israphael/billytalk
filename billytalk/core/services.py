@@ -50,7 +50,17 @@ from .ui_language import UI_LANGUAGE_SETTINGS, resolve_ui_language
 
 log = logging.getLogger("billytalk.services")
 
-__all__ = ["UiServices", "SERVICE_VERBS"]
+__all__ = ["DictationInFlight", "UiServices", "SERVICE_VERBS"]
+
+
+class DictationInFlight(RuntimeError):
+    """The core refused an action because a dictation is happening.
+
+    Its own type so that the refusal keeps its own answer: told apart from a
+    real failure, the interface can say «подождите, идёт диктовка» instead of
+    «не удалось», and the log records it as a normal event rather than an
+    error with a traceback.
+    """
 
 SERVICE_VERBS: Final = frozenset({
     "get_config", "set_config",
@@ -382,11 +392,23 @@ class UiServices:
         def job() -> None:
             try:
                 rows, files = self._clear_history()
+            except DictationInFlight:
+                # An ordinary answer, not an accident: no traceback, and its
+                # own code, because «подождите диктовку» and «база сломалась»
+                # send the user to do completely different things.
+                log.info("history clear refused: a dictation is in flight")
+                self._send_reply(rid, error="busy")
+                return
             except Exception:
                 log.exception("history clear failed")  # counts only, no text
                 self._send_reply(rid, error="clear_failed")
                 return
             log.info("history cleared: %d rows, %d audio files", rows, files)
+            # Every interface window hears it, not just the one that asked: the
+            # history window may be open, and its rows are gone from the
+            # database now. Ids are reused after a delete, so a stale row id
+            # would make «Вставить» paste a different dictation's text.
+            self._send({"type": "history_cleared"})
             self._send_reply(rid, result={"rows": rows, "files": files})
 
         self._post_job(job)

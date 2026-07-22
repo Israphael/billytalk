@@ -81,6 +81,7 @@ class FakeController:
         self.replies = replies
         self.sent: list[dict[str, Any]] = []
         self.on_devices = None
+        self.on_history_cleared = None
         self.apply_language = None
 
     def request(self, message: dict[str, Any], on_reply) -> None:
@@ -662,5 +663,86 @@ def test_settings_hints_wrap_instead_of_being_clipped(wx_app) -> None:
                 f"the hint runs past its column: {hint.GetLabel()!r}"
             )
             assert hint.GetLabel(), "and it still says something"
+    finally:
+        frame.Destroy()
+
+
+def test_history_window_empties_itself_when_the_core_says_it_cleared(wx_app) -> None:
+    """Cycle-3 review, medium: ids are reused after a delete, so a stale row on
+    screen is not merely out of date — «Вставить» on it would paste whatever
+    dictation owns that id now, and report «Вставлено»."""
+    from billytalk.ui.windows.history import HistoryFrame
+
+    fake = FakeController({"history_search": _ROWS_REPLY})
+    fake.on_history_cleared = None
+    frame = HistoryFrame(fake)  # type: ignore[arg-type]
+    try:
+        assert frame._list.GetItemCount() == 2
+        assert fake.on_history_cleared is not None, "the window takes the seat"
+
+        fake.on_history_cleared()
+
+        assert frame._list.GetItemCount() == 0, "nothing stale is left to click"
+        assert frame._rows == []
+        assert "очищена" in frame._footer.GetLabel().lower()
+    finally:
+        frame.Destroy()
+    wx.Yield()
+    if fake.on_history_cleared is not None:
+        fake.on_history_cleared()  # a push after death must not touch controls
+
+
+def test_settings_tells_busy_apart_from_broken_when_clearing(wx_app) -> None:
+    """Cycle-3 review: telling a broken database that it is busy leaves the
+    user pressing the button forever."""
+    from billytalk.ui.windows.settings import SettingsFrame
+
+    fake = FakeController({"get_config": _CONFIG_REPLY, "dictionary_get": _RULES_REPLY})
+    frame = SettingsFrame(fake)  # type: ignore[arg-type]
+    try:
+        frame._on_history_cleared({"type": "reply", "id": 1, "error": "busy"})
+        busy = frame.GetStatusBar().GetStatusText()
+        frame._on_history_cleared({"type": "reply", "id": 2, "error": "clear_failed"})
+        broken = frame.GetStatusBar().GetStatusText()
+        assert busy != broken, "one message for two different situations"
+        assert "диктовка" in busy.lower()
+
+        frame._on_history_cleared(
+            {"type": "reply", "id": 3, "result": {"rows": 4, "files": 2}}
+        )
+        done = frame.GetStatusBar().GetStatusText()
+        assert "4" in done and "2" in done
+    finally:
+        frame.Destroy()
+
+
+def test_settings_keeps_showing_a_device_that_went_away(wx_app) -> None:
+    """Cycle-3 review, low: unplugging the chosen headset must not make the
+    window claim «system default» is selected — the setting did not change,
+    and wxMSW sends no EVT_CHOICE for an already-selected item, so the user
+    could not have put it back."""
+    from billytalk.ui.windows.settings import SettingsFrame
+
+    config = {"config": {**_CONFIG_REPLY["config"],
+                         "audio_input_device": "Гарнитура Bluetooth"}}
+    fake = FakeController({
+        "get_config": config, "dictionary_get": _RULES_REPLY,
+        "audio_devices": {"inputs": ["Гарнитура Bluetooth", "Realtek"]},
+    })
+    frame = SettingsFrame(fake)  # type: ignore[arg-type]
+    try:
+        assert frame._mic_choice.GetStringSelection() == "Гарнитура Bluetooth"
+
+        fake.on_devices(["Realtek"])  # the headset is unplugged
+
+        shown = frame._mic_choice.GetStringSelection()
+        assert "Гарнитура Bluetooth" in shown, "the choice is still the choice"
+        assert "недоступно" in shown, "and it is honest about being away"
+
+        # And «system default» is reachable: selecting it is a real change.
+        frame._mic_choice.SetSelection(0)
+        frame._on_mic_choice(None)  # type: ignore[arg-type]
+        patch = next(m for m in reversed(fake.sent) if m["type"] == "set_config")
+        assert patch["patch"] == {"audio_input_device": None}
     finally:
         frame.Destroy()

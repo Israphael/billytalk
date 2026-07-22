@@ -108,6 +108,7 @@ STRINGS: Final[dict[str, str]] = {
     "settings.mic.device": "Устройство записи",
     "settings.mic.hint": "Список обновляется при подключении и отключении устройств",
     "settings.mic.check": "Проверить",
+    "settings.mic.unavailable": "{device} — недоступно",
     "settings.mic.ranked":
         "Если выбранного устройства нет на месте, BillyTalk сам возьмёт системное "
         "по умолчанию — диктовка не срывается из-за выдернутой гарнитуры.",
@@ -192,6 +193,7 @@ STRINGS: Final[dict[str, str]] = {
     "history.footer.page": "{shown} на экране · {total} записей · текст хранится бессрочно",
     "history.footer.found": "Найдено: {shown} (первые {page})",
     "history.footer.select": "Выберите запись",
+    "history.footer.cleared": "История очищена.",
     "history.footer.search_failed": "Поиск не ответил — попробуйте ещё раз",
     "history.footer.insert_failed": "Вставка не удалась — текст можно скопировать",
     "history.footer.copied": "Скопировано — вставьте Ctrl+V.",

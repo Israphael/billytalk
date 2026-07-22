@@ -49,7 +49,7 @@ from .logging_setup import configure_logging
 from .machine.driver import Driver, DriverDeps
 from .machine.effects import ErrorCode
 from .machine.events import Exit, HookDied
-from .services import UiServices
+from .services import DictationInFlight, UiServices
 from .store.config import save_config
 from .system_events import SystemEvents
 from .stt.groq import GroqProvider
@@ -389,9 +389,16 @@ def main() -> int:
         that is still being written would lose words the user just spoke — the
         one thing this product may never do. «Очистить» means the history as it
         stands, not one that is still growing.
+
+        «In flight» includes the **retry track**, which the machine's phase
+        cannot see: a dictation waiting out the network sits in Idle with an
+        empty queue while its ladder ticks in the scheduler (cycle-3 review).
+        Its row would be deleted here and then written to by the retry — by
+        an id a *new* dictation may already own.
         """
-        if driver.state.phase.name != "Idle" or driver.state.queue:
-            raise RuntimeError("a dictation is in flight")
+        if (driver.state.phase.name != "Idle" or driver.state.queue
+                or driver.pending_retries):
+            raise DictationInFlight("a dictation is in flight")
         return store.clear_all(audio_dir)
 
     services = UiServices(

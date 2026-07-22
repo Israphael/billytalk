@@ -71,6 +71,7 @@ class SettingsFrame(wx.Frame):
         self._config: dict[str, Any] = {}
         self._rules: list[dict[str, Any]] = []
         self._devices: list[str] = []
+        self._selectable: list[str] = []
 
         root = wx.Panel(self)
         self._nav = wx.ListBox(root, choices=[t(key) for key in _SECTION_KEYS])
@@ -132,10 +133,31 @@ class SettingsFrame(wx.Frame):
         self._fill_devices()
 
     def _fill_devices(self) -> None:
+        """Show what the config actually says, including a device that is not
+        here right now.
+
+        Dropping an absent choice back to «system default» would tell two
+        lies at once: that the setting changed (it did not — the ranked
+        fallback only *acts* as default while the device is away, spec §5),
+        and that the user can put it back — wxMSW sends no EVT_CHOICE for
+        selecting the item already selected, so «system default» would become
+        unreachable from this page (cycle-3 review).
+        """
         chosen = self._config.get("audio_input_device")
-        self._mic_choice.Set([t("common.system_default"), *self._devices])
-        index = self._devices.index(chosen) + 1 if chosen in self._devices else 0
-        self._mic_choice.SetSelection(index)
+        names = list(self._devices)
+        labels = [t("common.system_default"), *names]
+        if chosen and chosen not in names:
+            labels.append(t("settings.mic.unavailable", device=chosen))
+            names.append(chosen)
+        self._mic_choice.Set(labels)
+        self._mic_choice.SetSelection(names.index(chosen) + 1 if chosen in names else 0)
+        self._selectable = names
+        # The names of two inputs on one sound card differ only in their tail
+        # («задняя панель» / «передняя панель»), and the control was sized to
+        # its first item — «Системный по умолчанию» — so the tail was cut off
+        # and the two were indistinguishable.
+        self._mic_choice.SetMinSize(self._mic_choice.GetBestSize())
+        self.Layout()
 
     def _on_config(self, frame: dict[str, Any]) -> None:
         if "error" in frame:
@@ -423,8 +445,10 @@ class SettingsFrame(wx.Frame):
         index = self._mic_choice.GetSelection()
         # Index 0 is «system default», which the config spells as None — and
         # None is also what the ranked fallback lands on when a chosen device
-        # disappears (spec §5), so the two agree by construction.
-        device = self._devices[index - 1] if 0 < index <= len(self._devices) else None
+        # disappears (spec §5), so the two agree by construction. Below that
+        # sit the present devices, plus the absent-but-chosen one if any.
+        names = getattr(self, "_selectable", self._devices)
+        device = names[index - 1] if 0 < index <= len(names) else None
         self._patch("audio_input_device", device)
 
     def _on_mic_check(self, event: wx.CommandEvent) -> None:
@@ -496,10 +520,12 @@ class SettingsFrame(wx.Frame):
 
     def _on_history_cleared(self, frame: dict[str, Any]) -> None:
         if "error" in frame:
-            # The core refuses while a dictation is in flight — that is the
-            # likely error, and the actionable one.
+            # Two different answers on purpose: «подождите диктовку» and
+            # «не удалось» send the user to do completely different things,
+            # and telling a broken database that it is busy would leave them
+            # pressing the button forever (cycle-3 review).
             self.SetStatusText(
-                t("clear.busy") if frame.get("error") == "clear_failed"
+                t("clear.busy") if frame.get("error") == "busy"
                 else t("clear.failed")
             )
             return

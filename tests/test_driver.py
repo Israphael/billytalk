@@ -8,6 +8,7 @@ transcription workers are a list the test drains by hand.
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -537,3 +538,86 @@ def test_the_inserter_receives_the_prepared_text_as_the_needle(tmp_path: Path) -
 
     _target_, _snapshot, needle = world.inserter.calls[0]
     assert needle == world.clipboard.writes[0]
+
+
+# --------------------------------------------------------------------------- #
+# the retry track and the thread it runs on
+# --------------------------------------------------------------------------- #
+
+
+class ThreadBoundStore:
+    """A store that refuses a cross-thread call — like ``sqlite3`` really does.
+
+    The suite runs transcription "workers" inline, on the same thread, which is
+    why a whole class of defect hid here: the retry track wrote to the database
+    straight from the worker, and in production sqlite3 answers that with
+    «SQLite objects created in a thread can only be used in that same thread».
+    The exception went into a Future nobody reads, so a retry that SUCCEEDED
+    never reached the database and its row stayed pending_retry forever.
+
+    Wrapping the real store in its own thread affinity makes the suite as
+    strict as production.
+    """
+
+    def __init__(self, inner: Any, owner: int) -> None:
+        self._inner = inner
+        self._owner = owner
+        self.cross_thread_calls: list[str] = []
+
+    def __getattr__(self, name: str) -> Any:
+        attribute = getattr(self._inner, name)
+        # Only the store's own methods are guarded. `_conn` is passed straight
+        # through — a sqlite3.Connection is itself callable, so a naive check
+        # would wrap the connection the test helpers reach for.
+        if name.startswith("_") or not callable(attribute):
+            return attribute
+
+        def guarded(*args: Any, **kwargs: Any) -> Any:
+            import threading
+
+            if threading.get_ident() != self._owner:
+                self.cross_thread_calls.append(name)
+                raise sqlite3.ProgrammingError(
+                    "SQLite objects created in a thread can only be used in "
+                    "that same thread."
+                )
+            return attribute(*args, **kwargs)
+
+        return guarded
+
+
+def test_a_successful_retry_reaches_the_database_from_the_worker_thread(
+    tmp_path: Path,
+) -> None:
+    """Spec §3's whole point: an offline dictation is transcribed later and the
+    words arrive. The worker must hand its outcome to the driver thread, not
+    write from where it stands."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    world = build_world(tmp_path, outcomes=[
+        NetworkDown("timeout"), FakeProvider.ok("догнало по сети"),
+    ])
+    world.store = ThreadBoundStore(world.store, threading.get_ident())  # type: ignore[assignment]
+    world.driver.deps.store = world.store  # type: ignore[assignment]
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    world.driver.deps.submit_transcription = pool.submit  # type: ignore[assignment]
+    try:
+        dictate(world)
+        world.driver.drain()                      # first attempt fails: no network
+        world.advance(1_500)                      # the ladder's first rung
+        # The worker is running on a real thread now; let it finish, then let
+        # the driver dispatch whatever it posted back.
+        pool.shutdown(wait=True)
+        world.driver.drain()
+    finally:
+        pool.shutdown(wait=False)
+
+    row = world.row()
+    assert world.store.cross_thread_calls == [], (
+        f"the worker touched the store itself: {world.store.cross_thread_calls}"
+    )
+    assert row["text_final"] == "догнало по сети", "the words arrived"
+    assert row["delivery_status"] == "withheld", "retry arrivals never auto-insert"
+    assert row["retry_count"] == 1

@@ -540,3 +540,77 @@ def test_clear_all_on_an_empty_history_is_a_no_op(tmp_path) -> None:
     conn = connect(tmp_path / "history.db")
     ensure_schema(conn)
     assert HistoryStore(conn).clear_all(tmp_path / "missing-audio-dir") == (0, 0)
+
+
+def test_clear_all_leaves_no_transcript_in_the_database_files(tmp_path) -> None:
+    """Cycle-3 review, high: «Восстановить их будет нельзя» has to be true of
+    the FILES, not just the table. The text enters through the write-ahead log,
+    which secure_delete never touches and VACUUM writes to rather than clears —
+    measured before the fix as a 317 KB history.db-wal full of plain UTF-8."""
+    from billytalk.core.store.db import connect, ensure_schema
+    from billytalk.core.store.history import HistoryStore
+
+    marker = "совершенно секретная фраза сорок два"
+    db_path = tmp_path / "history.db"
+    conn = connect(db_path)
+    ensure_schema(conn)
+    store = HistoryStore(conn)
+    for index in range(5):
+        row_id = store.add(
+            seq=index, created_at=1_700_000_000_000 + index, now=1_700_000_000_000,
+            duration_ms=1000, status=DeliveryStatus.PENDING_TRANSCRIBE, audio_path=None,
+        )
+        store.record_transcription(
+            row_id, text_raw=marker, text_final=marker, language="ru",
+            provider_id="groq", billed_seconds=1.0, latency_ms=100,
+        )
+    assert marker.encode("utf-8") in db_path.read_bytes() or any(
+        marker.encode("utf-8") in sidecar.read_bytes()
+        for sidecar in tmp_path.glob("history.db-*")
+    ), "the words must be there before the clear, or this test proves nothing"
+
+    store.clear_all(tmp_path / "audio")
+
+    for file in tmp_path.glob("history.db*"):
+        assert marker.encode("utf-8") not in file.read_bytes(), (
+            f"the transcript survived in {file.name}"
+        )
+
+
+def test_clear_all_counts_only_the_files_that_really_went(tmp_path) -> None:
+    """Cycle-3 review, medium: os.remove fails on Windows while anyone holds
+    the file open, and «удалено 6» for five deleted files and one survivor is
+    the one lie this dialog must not tell."""
+    from billytalk.core.store import history as history_module
+    from billytalk.core.store.db import connect, ensure_schema
+    from billytalk.core.store.history import HistoryStore
+
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    conn = connect(tmp_path / "history.db")
+    ensure_schema(conn)
+    store = HistoryStore(conn)
+    stuck = audio_dir / "clip1.flac"
+    for index in range(3):
+        clip = audio_dir / f"clip{index}.flac"
+        clip.write_bytes(b"fLaC")
+        store.add(seq=index, created_at=1_700_000_000_000 + index,
+                  now=1_700_000_000_000, duration_ms=1000,
+                  status=DeliveryStatus.PENDING_TRANSCRIBE, audio_path=str(clip))
+
+    real_remove = history_module.os.remove
+
+    def stubborn(path: str) -> None:
+        if str(path) == str(stuck):
+            raise PermissionError(32, "The process cannot access the file")
+        real_remove(path)
+
+    history_module.os.remove = stubborn  # type: ignore[assignment]
+    try:
+        rows, files = store.clear_all(audio_dir)
+    finally:
+        history_module.os.remove = real_remove  # type: ignore[assignment]
+
+    assert rows == 3
+    assert files == 2, "the file that could not be removed is not counted"
+    assert stuck.exists(), "and it is honestly still there"

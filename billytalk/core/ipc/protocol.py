@@ -73,6 +73,7 @@ CORE_TO_UI: Final = frozenset({
     "hello_ack", "reply", "error",
     "state_changed", "transcription_ready",
     "usage_updated", "device_list_changed", "hotkey_captured",
+    "history_cleared",
     "menu_command",
 })
 

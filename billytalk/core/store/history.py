@@ -433,12 +433,28 @@ class HistoryStore:
         which the startup sweep collects; the reverse order would leave rows
         pointing at files that are gone.
 
-        ``secure_delete=ON`` (db.py) means the deleted pages are zeroed rather
-        than merely unlinked, so the transcripts do not linger in the file's
-        free space. The ``VACUUM`` afterwards is housekeeping on top of that —
-        best effort, because a reader (the services' read-only connection) can
-        hold it off, and a database that stayed a few pages larger is not a
-        privacy failure.
+        Three erasure steps, and all three are needed — measured, not assumed
+        (cycle-3 review, high):
+
+        * ``secure_delete=ON`` (db.py) zeroes the freed pages of the **main
+          file**, so transcripts do not linger in its free space;
+        * ``VACUUM`` rebuilds that file;
+        * ``PRAGMA wal_checkpoint(TRUNCATE)`` empties the **write-ahead log**,
+          and without it the whole point is lost: the text entered the database
+          through the WAL, ``secure_delete`` never touches that file, and
+          ``VACUUM`` writes to it rather than clearing it. Measured after a
+          clear: a 317 KB ``history.db-wal`` still holding the transcripts in
+          plain UTF-8, for as long as the process lives — and the core lives in
+          the tray. The checkpoint runs **after** VACUUM for that reason.
+
+        Both are best effort: a reader (the services' read-only connection) can
+        hold them off, and failing to shrink a file is not worth failing the
+        action the user asked for. The counts come back either way.
+
+        The file count is what was actually removed. ``os.remove`` on Windows
+        fails while anyone holds the file open (an antivirus, a backup agent,
+        the shell's preview pane), and reporting «удалено 6» for five deleted
+        files and one survivor is the one lie this dialog must not tell.
         """
         rows = self._conn.execute(
             "SELECT audio_path FROM history WHERE audio_path IS NOT NULL"
@@ -450,19 +466,29 @@ class HistoryStore:
             # nothing (db.py says so at the schema).
             self._conn.execute("DELETE FROM history")
         files = 0
+        stubborn = 0
         for row in rows:
             path = row["audio_path"]
-            if path:
-                _remove_quietly(path)
+            if not path:
+                continue
+            if _remove_quietly(path):
                 files += 1
+            else:
+                stubborn += 1
         if audio_dir is not None:
             # Anything the rows did not know about goes too: this action
-            # promises «и аудио», not «аудио, о котором есть запись».
+            # promises «и аудио», not «аудио, о котором есть запись». A file
+            # the loop above failed to remove is now an orphan and would be
+            # counted twice, so the sweep's answer is what it actually removed.
             files += len(self.sweep_orphan_audio(audio_dir))
-        try:
-            self._conn.execute("VACUUM")
-        except sqlite3.Error:
-            log.info("vacuum after clear skipped; a reader holds the database")
+        if stubborn:
+            # No paths: a path is a filename the user spoke into (spec §13).
+            log.warning("clear: %d audio files could not be removed", stubborn)
+        for pragma in ("VACUUM", "PRAGMA wal_checkpoint(TRUNCATE)"):
+            try:
+                self._conn.execute(pragma)
+            except sqlite3.Error:
+                log.info("%s after clear skipped; a reader holds the database", pragma)
         return int(count), files
 
     def sweep_orphan_audio(self, audio_dir: Path) -> list[Path]:
@@ -489,17 +515,28 @@ class HistoryStore:
                 continue
             if os.path.normcase(os.path.abspath(file)) in referenced:
                 continue
-            _remove_quietly(str(file))
-            removed.append(file)
+            # Only what actually went: the clear action reports this count to
+            # the user, and a file another process holds open is still there.
+            if _remove_quietly(str(file)):
+                removed.append(file)
         return removed
 
 
-def _remove_quietly(path: str) -> None:
-    """Missing is fine — the sweep and the cleanup may race a manual delete."""
+def _remove_quietly(path: str) -> bool:
+    """Delete the file; answer whether it is gone.
+
+    Missing counts as gone — the sweep and the cleanup may race a manual
+    delete, and the goal is «not there», not «I removed it». Anything else
+    (Windows refuses while a process holds the handle) is False, so a caller
+    that reports a count to the user reports the truth.
+    """
     try:
         os.remove(path)
+        return True
+    except FileNotFoundError:
+        return True
     except OSError:
-        pass
+        return False
 
 
 def _size_quietly(path: str) -> int:

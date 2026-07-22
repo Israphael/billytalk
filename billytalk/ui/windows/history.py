@@ -149,7 +149,26 @@ class HistoryFrame(wx.Frame):
         sizer.Add(actions, 0, wx.EXPAND | wx.ALL, 10)
         root.SetSizer(sizer)
         dress(self)
+        # «Удалить всё» in settings empties the table under this window. The
+        # rows on screen would then be not merely stale but dangerous: ids are
+        # reused after a delete, so «Вставить» on row 1 would paste whatever
+        # dictation owns id 1 now (cycle-3 review).
+        self._c.on_history_cleared = self._on_cleared
+        self.Bind(wx.EVT_CLOSE, self._on_close)
         self.load()
+
+    def _on_close(self, event: wx.CloseEvent) -> None:
+        if self._c.on_history_cleared == self._on_cleared:
+            self._c.on_history_cleared = None
+        event.Skip()
+
+    def _on_cleared(self) -> None:
+        if not self:  # destroyed: wx windows go falsy
+            return
+        self._rows = []
+        self._total = 0
+        self._refill()
+        self._footer.SetLabel(t("history.footer.cleared"))
 
     # ------------------------------------------------------------------ #
     # data flow

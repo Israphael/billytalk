@@ -243,6 +243,9 @@ class Driver:
         self.scheduler = Scheduler()
         self.events: queue.Queue[Event | _ServiceJob] = queue.Queue()
         self._dictations: dict[int, _DictationState] = {}
+        self._retrying: set[int] = set()
+        """Row ids waiting out the network on the retry ladder — see
+        :attr:`pending_retries`."""
         self._pending_target: Any = None
         self._suppress = True
         self.capture_mode = False
@@ -690,7 +693,20 @@ class Driver:
             )
         return len(pending)
 
+    @property
+    def pending_retries(self) -> int:
+        """How many rows are waiting out the network right now.
+
+        The machine's phase cannot answer this: a dictation on the retry
+        ladder leaves the phase Idle and the queue empty while its timer ticks
+        in the scheduler. Anything that means «is the core done with the
+        history» — the clear action, above all — has to ask here too
+        (cycle-3 review). Driver thread only, like the rest of this state.
+        """
+        return len(self._retrying)
+
     def _schedule_retry(self, item: _RetryItem, *, immediate: bool = False) -> None:
+        self._retrying.add(item.row_id)
         delay_s = 0.0 if immediate else RETRY_LADDER_S[min(item.attempts, len(RETRY_LADDER_S) - 1)]
         self.scheduler.at(self.deps.now_ms() + int(delay_s * 1000), lambda: self._retry_job(item))
 
@@ -698,6 +714,7 @@ class Driver:
         if item.clip_path is None or not item.clip_path.exists():
             # The audio is gone (evicted at the cap, or the file vanished).
             # Nothing can ever transcribe this row again; say so.
+            self._retrying.discard(item.row_id)
             self.deps.store.set_status(
                 item.row_id, DeliveryStatus.TRANSCRIBE_FAILED,
                 now=self.deps.wall_ms(), error_code=ErrorCode.PROVIDER_ERROR.value,
@@ -710,12 +727,29 @@ class Driver:
         )
 
         def job() -> None:
+            # Worker thread: talk to the network here and do NOTHING else. The
+            # outcome rides post_job back to the driver thread, because both
+            # hands it needs afterwards live there — the single SQLite
+            # connection (sqlite3 refuses a cross-thread use outright: «SQLite
+            # objects created in a thread can only be used in that same
+            # thread») and the scheduler's heap, which has no lock.
+            #
+            # Writing from here raised that ProgrammingError into a Future
+            # nobody reads, so it vanished in silence: a retry that SUCCEEDED
+            # never reached the database and its row stayed pending_retry
+            # forever. That is the one failure this product exists to prevent,
+            # on the very track that exists to prevent it. The main track had
+            # this right all along — its job() only posts events.
             try:
                 result = self.deps.provider.transcribe(clip, options)
             except TranscriptionError as exc:
-                self._on_retry_error(item, exc)
+                # Rebound: Python deletes the `as` name when the except block
+                # ends, so a lambda closing over `exc` would fire later with a
+                # NameError — which the suite caught the moment this changed.
+                failure = exc
+                self.post_job(lambda: self._on_retry_error(item, failure))
                 return
-            self._on_retry_success(item, result)
+            self.post_job(lambda: self._on_retry_success(item, result))
 
         self.deps.submit_transcription(job)
 
@@ -723,6 +757,7 @@ class Driver:
         """A retry-track arrival: history only — no clipboard, no paste
         (spec §6). Status ``withheld`` (OPEN-QUESTIONS §18); ``retry_count>0``
         marks the arrival so Ctrl+Alt+Z can exclude it (spec §9)."""
+        self._retrying.discard(item.row_id)
         self.deps.gate.transcribe_succeeded(self.deps.now_ms())
         final = self.deps.dictionary.apply(result.text.value)
         self.deps.store.record_transcription(
@@ -741,6 +776,7 @@ class Driver:
     def _on_retry_error(self, item: _RetryItem, exc: TranscriptionError) -> None:
         item.attempts += 1
         if exc.advice is RetryAdvice.NEVER:
+            self._retrying.discard(item.row_id)
             self.deps.store.set_status(
                 item.row_id, DeliveryStatus.TRANSCRIBE_FAILED,
                 now=self.deps.wall_ms(), error_code=exc.code.value,
@@ -749,6 +785,7 @@ class Driver:
             return
         self.deps.gate.network_lost()
         if exc.advice is RetryAdvice.BACKOFF and item.attempts >= len(RETRY_LADDER_S):
+            self._retrying.discard(item.row_id)
             self.deps.store.set_status(
                 item.row_id, DeliveryStatus.TRANSCRIBE_FAILED,
                 now=self.deps.wall_ms(), error_code=exc.code.value,

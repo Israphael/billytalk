@@ -106,6 +106,7 @@ STRINGS: Final[dict[str, str]] = {
     "settings.mic.device": "Recording device",
     "settings.mic.hint": "The list refreshes when devices are plugged in or out",
     "settings.mic.check": "Test",
+    "settings.mic.unavailable": "{device} — unavailable",
     "settings.mic.ranked":
         "If the chosen device is not there, BillyTalk falls back to the system "
         "default by itself — an unplugged headset does not cost you a dictation.",
@@ -188,6 +189,7 @@ STRINGS: Final[dict[str, str]] = {
     "history.footer.page": "{shown} shown · {total} records · text is kept forever",
     "history.footer.found": "Found: {shown} (first {page})",
     "history.footer.select": "Select a record",
+    "history.footer.cleared": "History cleared.",
     "history.footer.search_failed": "The search did not answer — try again",
     "history.footer.insert_failed": "The insert failed — the text can still be copied",
     "history.footer.copied": "Copied — press Ctrl+V.",

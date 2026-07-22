@@ -6,6 +6,7 @@ so replies land in the recorder the moment the verb returns.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -603,3 +604,38 @@ def test_audio_devices_answers_from_the_cache(world: World) -> None:
     world.services._list_input_devices = None  # type: ignore[assignment]
     frame = world.services.handle("audio_devices", {"id": 83})
     assert _result(frame) == {"inputs": []}, "no collaborator is an empty list, not a crash"
+
+
+def test_history_clear_pushes_so_an_open_history_window_hears_it(world: World) -> None:
+    """Cycle-3 review, medium: ids are reused after a delete, so a window still
+    showing the old rows would paste a different dictation's text."""
+    world.services._clear_history = lambda: (2, 1)  # type: ignore[assignment]
+    world.services.handle("history_clear", {"id": 84})
+    kinds = [frame.get("type") for frame in world.sent]
+    assert "history_cleared" in kinds, "every window hears it, not just the asker"
+    assert kinds.index("history_cleared") < kinds.index("reply"), (
+        "the push goes out before the reply, so no window can act on stale rows"
+    )
+
+
+def test_a_refused_clear_is_busy_not_a_failure(world: World, caplog) -> None:
+    """Cycle-3 review: «подождите диктовку» and «база сломалась» send the user
+    to do completely different things, so they cannot share one code — and the
+    refusal is a normal event, not an ERROR with a traceback."""
+    from billytalk.core.services import DictationInFlight
+
+    def busy() -> tuple[int, int]:
+        raise DictationInFlight("a dictation is in flight")
+
+    caplog.set_level("DEBUG")
+    world.services._clear_history = busy  # type: ignore[assignment]
+    world.services.handle("history_clear", {"id": 85})
+    assert world.sent[-1] == {"type": "reply", "id": 85, "error": "busy"}
+    assert "Traceback" not in caplog.text
+
+    def broken() -> tuple[int, int]:
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    world.services._clear_history = broken  # type: ignore[assignment]
+    world.services.handle("history_clear", {"id": 86})
+    assert world.sent[-1] == {"type": "reply", "id": 86, "error": "clear_failed"}

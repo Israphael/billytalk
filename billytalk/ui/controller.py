@@ -90,6 +90,10 @@ class UiController:
         """The settings window watches the recording devices here: plugging a
         headset in while it is open should change the list, not require a
         reopen. ``device_list_changed`` is a push, so it needs its own seat."""
+        self.on_history_cleared: Callable[[], None] | None = None
+        """The history window watches here: after «Удалить всё» the rows on its
+        screen are gone from the database, and — since ids are reused — a stale
+        row id would make «Вставить» paste somebody else's text."""
         self.on_state: Callable[[str | None], None] | None = None
         """The wizard's live-test step watches the machine here: it must know
         that a dictation happened before it asks the history for the words."""
@@ -145,6 +149,9 @@ class UiController:
         elif kind == "device_list_changed":
             if self.on_devices is not None:
                 self.on_devices(message.get("inputs") or [])
+        elif kind == "history_cleared":
+            if self.on_history_cleared is not None:
+                self.on_history_cleared()
 
     def _on_state(self, state: object) -> None:
         if self.on_state is not None:
