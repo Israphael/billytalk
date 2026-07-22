@@ -65,6 +65,10 @@ Write-Host "  WER exclusion: $exeName" -ForegroundColor DarkGray
 # shortcut to exist at all. The icon comes from the exe itself (PyInstaller
 # embedded packaging\billytalk.ico), so the shortcut inherits it.
 $startMenu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
+# Present on every ordinary profile, absent on a freshly created or redirected
+# one - and CreateShortcut().Save() fails with DirectoryNotFoundException
+# rather than creating the path itself.
+if (-not (Test-Path $startMenu)) { New-Item -ItemType Directory -Force -Path $startMenu | Out-Null }
 $lnk = Join-Path $startMenu "BillyTalk.lnk"
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($lnk)
