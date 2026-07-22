@@ -83,7 +83,8 @@ Write-Host "  shortcut: Start Menu \ BillyTalk" -ForegroundColor DarkGray
 # So the app can be removed the way every other program is, instead of by
 # knowing that uninstall.ps1 exists.
 $uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\BillyTalk"
-$uninstallCmd = "powershell.exe -ExecutionPolicy Bypass -File `"$dest\uninstall.ps1`""
+$ps = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+$uninstallCmd = "`"$ps`" -NoProfile -ExecutionPolicy Bypass -File `"$dest\uninstall.ps1`""
 New-Item -Path $uninstallKey -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name "DisplayName" -Value "BillyTalk" -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name "DisplayIcon" -Value $destExe -PropertyType String -Force | Out-Null

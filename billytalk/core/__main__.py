@@ -24,6 +24,7 @@ import win32process
 
 from ..i18n import set_language, t
 from .audio.capture import CaptureError, CaptureSession
+from .crash import install_crash_guards
 from .audio.cues import play_cue
 from .audio.encode import encode_flac
 from .audio.trim import trim_silence
@@ -141,6 +142,10 @@ def main() -> int:
     # http.client debuglevel to 0 — the one output channel that bypasses
     # logging entirely — before any connection can exist.
     configure_logging(local / "logs")
+    # Spec §13's other two crash defences, beside the installer's WER
+    # exclusion: no dump offered, and an unhandled exception logged by type
+    # and place — never by message, which can be the key itself.
+    install_crash_guards("core")
 
     loaded = load_config(roaming / "config.json", now_ms=int(time.time() * 1000))
     config = loaded.config

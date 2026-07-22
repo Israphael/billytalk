@@ -394,3 +394,46 @@ def test_check_key_maps_the_status_to_what_the_wizard_says(
 def test_check_key_calls_a_dead_socket_network_not_invalid(tmp_path: Path) -> None:
     provider, _connections, _clip = _provider([OSError("no route")], tmp_path)
     assert provider.check_key() == "network"
+
+
+def test_a_key_that_cannot_be_a_header_never_reaches_a_log(
+    tmp_path: Path, caplog
+) -> None:
+    """Security review, medium: `http.client.putheader` raises
+    ValueError('Invalid header value b"Bearer <THE WHOLE KEY>"'). Caught too
+    late that message lands in core.log — the file the settings window offers
+    a button to open, under the promise that dictations never reach it."""
+    poisoned = "gsk_REALSECRET_abcdef\nZZZ"
+
+    class Raising:
+        """A connection whose request() fails the way putheader does."""
+
+        def connect(self) -> None: ...
+        def close(self) -> None: ...
+
+        def request(self, *_a: object, **_k: object) -> None:
+            raise ValueError(f"Invalid header value {('Bearer ' + poisoned)!r}")
+
+        def getresponse(self) -> None:  # pragma: no cover — never reached
+            raise AssertionError
+
+    pool = WarmConnectionPool("api.groq.test", factory=Raising)  # type: ignore[arg-type]
+    provider = GroqProvider(lambda: poisoned, pool=pool)
+
+    caplog.set_level("DEBUG")
+    assert provider.check_key() == "invalid", "the user is sent to fix the key"
+    assert "REALSECRET" not in caplog.text
+
+    # The same header is built by transcribe(); there the escape wedged the
+    # dictation in pending_transcribe forever (harness §12: every failure path
+    # ends in a taxonomy code).
+    clip_file = tmp_path / "clip.flac"
+    clip_file.write_bytes(b"fLaC")
+    clip = AudioClip(path=clip_file, duration_ms=100)
+    with pytest.raises(KeyInvalid) as caught:
+        provider.transcribe(clip, OPTIONS)
+    assert "REALSECRET" not in str(caught.value)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None, (
+        "a chained exception would carry the key into every repr"
+    )
+    assert "REALSECRET" not in caplog.text

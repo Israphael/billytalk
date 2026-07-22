@@ -38,7 +38,7 @@ from .base import (
     TranscriptionOptions,
     TranscriptionResult,
 )
-from .errors import (
+from .errors import (  # noqa: F401 — KeyInvalid is raised from _send
     AudioUnreadable,
     KeyInvalid,
     NetworkDown,
@@ -163,6 +163,7 @@ class GroqProvider:
             "Accept": "application/json",
         }
         pooled = self._pool.acquire()
+        unusable = False
         try:
             pooled.raw.request("GET", _MODELS_PATH, body=None, headers=headers)
             response = pooled.raw.getresponse()
@@ -172,6 +173,19 @@ class GroqProvider:
                 http.client.HTTPException, ssl.SSLError, OSError):
             self._pool.discard(pooled.raw)
             return "network"
+        except (ValueError, UnicodeEncodeError):
+            # A key that cannot even become a header — a newline pasted along
+            # with it, a Cyrillic character from a mangled copy. `putheader`
+            # raises with the FULL header value in the message, which is the
+            # key (security review, medium): the only safe thing to do with
+            # that exception is drop it here, unlogged and unchained, and
+            # answer with the word that sends the user to fix the key.
+            self._pool.discard(pooled.raw)
+            unusable = True
+        if unusable:
+            # Outside the except block, so nothing rides on __context__ —
+            # the same discipline secrets.py documents for the same reason.
+            return "invalid"
         self._pool.release(pooled.raw)
         if status in (401, 403):
             return "invalid"
@@ -279,6 +293,18 @@ class GroqProvider:
             OSError,
         ) as exc:
             raise NetworkDown(type(exc).__name__) from exc
+        except (ValueError, UnicodeEncodeError):
+            # `putheader` refuses a header value with a newline or a non-latin-1
+            # character, and its message quotes the value — here, the API key
+            # (security review, medium). Without this branch the ValueError
+            # escaped into the worker pool: no log line, but the dictation wedged
+            # in pending_transcribe forever, against harness §12's rule that
+            # every failure path ends in a taxonomy code.
+            pass
+        # Reached only by falling out of that last handler, and reached *after*
+        # it — so neither __cause__ nor __context__ carries the key-bearing
+        # exception (secrets.py documents the same discipline).
+        raise KeyInvalid(0)
 
     @staticmethod
     def _raise_for_status(status: int, headers: dict[str, str]) -> None:

@@ -305,11 +305,23 @@ class UiServices:
         if not isinstance(key, str) or not key.strip():
             self._send_reply(rid, error="bad_key")
             return None
+        key = key.strip()
+        if not (key.isascii() and key.isprintable()):
+            # An API key is printable ASCII. Anything else is a mangled paste —
+            # a newline that came along with the copy, a Cyrillic character
+            # from a mis-typed one — and it is refused HERE, at the boundary,
+            # because further down `http.client.putheader` raises with the
+            # whole header value (the key) inside its message (security
+            # review, medium). The provider has its own guard; this one means
+            # the key never gets that far in the first place.
+            log.warning("set_config rejected a key that is not printable ASCII")
+            self._send_reply(rid, error="bad_key")
+            return None
         if self._write_groq_key is None:
             self._send_reply(rid, error="unavailable")
             return None
         try:
-            self._write_groq_key(key.strip())
+            self._write_groq_key(key)
         except Exception:
             # No exc_info: a credential-write failure can carry the value in
             # its arguments, and this line goes to a file (spec §13).
@@ -331,7 +343,12 @@ class UiServices:
             try:
                 status = self._check_groq_key()
             except Exception:
-                log.exception("key check failed")
+                # log.warning, never log.exception: the only exception this
+                # call can raise which is not already handled inside the
+                # provider is one whose message quotes the key (security
+                # review, medium). A traceback here could describe nothing
+                # else useful, and could describe the secret.
+                log.warning("key check failed")
                 status = "network"
             self._send_reply(rid, result={"status": status})
 

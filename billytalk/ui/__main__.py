@@ -21,6 +21,7 @@ from pathlib import Path
 
 import wx
 
+from ..core.crash import install_crash_guards
 from ..core.logging_setup import configure_logging
 from ..i18n import set_language
 from .controller import UiController
@@ -49,6 +50,7 @@ def main(argv: list[str] | None = None) -> int:
 
     local = Path(os.environ["LOCALAPPDATA"]) / "BillyTalk"
     configure_logging(local / "logs", filename="ui.log")
+    install_crash_guards("ui")  # spec §13, same reason as the core
 
     # wx.App must exist before any wx.CallAfter can queue onto its loop, and
     # before the plashka's window can be created.

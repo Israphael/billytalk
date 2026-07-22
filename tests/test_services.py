@@ -553,3 +553,17 @@ def test_autostart_verbs_answer_the_state_and_refuse_a_non_boolean(world: World)
     assert state["available"] is False
     bad = world.services.handle("autostart_set", {"id": 63, "enabled": "yes"})
     assert bad == {"type": "reply", "id": 63, "error": "bad_value"}
+
+
+def test_set_key_refuses_a_key_that_is_not_printable_ascii(
+    world: World, caplog
+) -> None:
+    """Security review, medium: the boundary refuses what would later make
+    http.client raise with the whole key inside the message. An API key is
+    printable ASCII; a newline or a Cyrillic character means a mangled paste."""
+    caplog.set_level("DEBUG")
+    for bad in ("gsk_secret\nZZZ", "gsk_секрет", "gsk_a\tb"):
+        world.services.handle("set_key", {"id": 70, "key": bad})
+        assert world.sent[-1] == {"type": "reply", "id": 70, "error": "bad_key"}
+    assert world.keys_written == [], "nothing reached the Credential Manager"
+    assert "secret" not in caplog.text and "секрет" not in caplog.text

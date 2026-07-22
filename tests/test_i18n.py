@@ -107,3 +107,36 @@ def test_the_default_language_is_the_fallback_table() -> None:
 )
 def test_resolve_ui_language(setting: object, system: str, expected: str) -> None:
     assert resolve_ui_language(setting, system=system) == expected
+
+
+# --------------------------------------------------------------------------- #
+# the crash guards (spec §13's other two defences)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_top_level_handler_logs_the_place_and_never_the_message(caplog) -> None:
+    """Security review, low: §13 asks for SetErrorMode and a top-level handler
+    beside the installer's WER exclusion, and console=False makes them
+    load-bearing. The handler must not log the message — an exception whose
+    message IS the API key is exactly what the same review found."""
+    import sys
+    import threading
+
+    from billytalk.core.crash import install_crash_guards, where
+
+    before_sys, before_thread = sys.excepthook, threading.excepthook
+    try:
+        install_crash_guards("test")
+        assert sys.excepthook is not before_sys
+        caplog.set_level("DEBUG")
+        try:
+            raise ValueError("Invalid header value b'Bearer gsk_SECRET'")
+        except ValueError as exc:
+            sys.excepthook(type(exc), exc, exc.__traceback__)
+        assert "gsk_SECRET" not in caplog.text
+        assert "ValueError" in caplog.text, "the type is what makes it actionable"
+        assert "test_i18n.py" in caplog.text, "and so is the place"
+    finally:
+        sys.excepthook, threading.excepthook = before_sys, before_thread
+
+    assert where(None) == "?"

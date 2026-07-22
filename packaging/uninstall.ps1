@@ -37,8 +37,20 @@ $dest = Join-Path $env:LOCALAPPDATA "Programs\BillyTalk"
 if (Test-Path $dest) {
     $self = $MyInvocation.MyCommand.Path
     if ($self -and $self.StartsWith($dest, [System.StringComparison]::OrdinalIgnoreCase)) {
-        $cmd = "Start-Sleep -Seconds 2; Remove-Item -Recurse -Force '$dest'"
-        Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @("-ExecutionPolicy", "Bypass", "-Command", $cmd)
+        # The path travels in an ENVIRONMENT VARIABLE, never inside the command
+        # text. An apostrophe is legal in a Windows account name
+        # (C:\Users\O'Brien) and quoting it into a -Command string breaks the
+        # quoting, so nothing gets deleted while the uninstaller says "Done" -
+        # measured, not guessed: that is exactly what the first version did.
+        # A parameter does not help either, because -Command swallows every
+        # remaining argument into the command string. The environment needs no
+        # quoting at all, and the child inherits it.
+        # -LiteralPath for the neighbouring reason: brackets in a path are
+        # wildcards to Remove-Item otherwise.
+        $ps = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+        $env:BILLYTALK_REMOVE_DIR = $dest
+        $cmd = 'Start-Sleep -Seconds 2; Remove-Item -Recurse -Force -LiteralPath $env:BILLYTALK_REMOVE_DIR'
+        Start-Process $ps -WindowStyle Hidden -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $cmd)
         Write-Host "  program folder will be removed in a moment" -ForegroundColor DarkGray
     } else {
         Remove-Item -Recurse -Force $dest

@@ -61,12 +61,16 @@ powershell -ExecutionPolicy Bypass -File packaging\install.ps1
 
 ```
 $env:BILLYTALK_PFX = "C:\path\to\billytalk.pfx"
-$env:BILLYTALK_PFX_PASSWORD = "..."
 powershell -ExecutionPolicy Bypass -File packaging\sign.ps1
 ```
 
-Скрипт подписывает SHA-256 и ставит RFC3161-метку времени (без неё подпись
-умирает вместе со сроком сертификата).
+Пароль скрипт спросит сам и не выпустит из процесса: **в аргументах командной
+строки пароля быть не должно** — их читает любой процесс того же пользователя,
+а `Win32_Process` через WMI и вовсе кто угодно на машине. Вместе с самим `.pfx`
+на диске это отдало бы закрытый ключ подписи. Поэтому не `signtool /p`, а
+`Set-AuthenticodeSignature` с `SecureString` и без дочернего процесса.
+Подпись SHA-256 плюс RFC3161-метка времени (без неё подпись умирает вместе со
+сроком сертификата).
 
 ## Известные риски первого запуска
 
