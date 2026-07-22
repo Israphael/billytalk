@@ -520,3 +520,65 @@ def test_wizard_language_switch_on_the_last_step_hands_the_seat_to_the_twin(
             if window and window.GetTitle().startswith("BillyTalk"):
                 window.Destroy()
         wx.Yield()
+
+
+# --------------------------------------------------------------------------- #
+# cycle-3 review fixes
+# --------------------------------------------------------------------------- #
+
+
+def test_key_form_callbacks_are_bound_methods_so_a_closed_dialog_is_dropped(
+    wx_app,
+) -> None:
+    """Review, low: a test_key answer is a network round trip (the pool waits
+    up to 30 s). The controller drops a reply for a destroyed window — but it
+    recognises one only through __self__, which a closure does not have."""
+    from billytalk.ui.controller import UiController
+    from billytalk.ui.windows.wizard import KeyDialog
+
+    frame, controller = _wizard()
+    try:
+        form = frame._key_form
+        for callback in (form._on_stored, form._on_checked, frame._on_mic_answered,
+                         frame._on_language_applied):
+            assert getattr(callback, "__self__", None) is not None, (
+                f"{callback} is a closure; a late reply would touch dead controls"
+            )
+    finally:
+        frame.Destroy()
+
+    # And the guard really drops it: the reply for a destroyed dialog must not
+    # reach its controls (before the fix this raised «wrapped C/C++ object
+    # deleted» instead of being dropped).
+    real = UiController(_FakePlashka())  # type: ignore[arg-type]
+    real.send = lambda _m: None
+    dialog = KeyDialog(real)
+    real._pending[7] = dialog.form._on_checked
+    dialog.Destroy()
+    wx.Yield()
+    real.dispatch({"type": "reply", "id": 7, "result": {"status": "ok"}})
+
+
+def test_release_test_does_not_steal_another_wizards_seat(wx_app) -> None:
+    """Review, low: one seat, two possible wizards (first run + «Пройти
+    заново»). Closing the second must not deafen the first."""
+    first, controller = _wizard()
+    second = None
+    try:
+        first._go(6)
+        seat = controller.on_state
+        assert seat is not None
+
+        from billytalk.ui.windows.wizard import WizardFrame
+
+        second = WizardFrame(controller)  # type: ignore[arg-type]
+        second._go(0)      # step 1: it never takes the seat
+        second._release_test()
+        assert controller.on_state is seat, "the live wizard keeps its seat"
+
+        first._release_test()
+        assert controller.on_state is None, "its owner does give it up"
+    finally:
+        if second:
+            second.Destroy()
+        first.Destroy()

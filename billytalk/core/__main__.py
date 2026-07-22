@@ -32,7 +32,9 @@ from .hooks.lowlevel import HookThread
 from .hooks.watchdog import HookWatchdog
 from .audio.devices import (
     default_input_device,
+    hold_for_probe,
     input_device_names,
+    probe_active,
     reload_portaudio,
     resolve_input_device,
 )
@@ -109,7 +111,11 @@ class Notifier:
     never the only channel — every one of these codes already sounded a cue
     and moved the icon.
 
-    Called from the driver thread. ``Shell_NotifyIcon`` is thread-safe.
+    **Thread:** usually the driver's, but not only — ``groq_key`` hands this
+    to the provider, so a transcription worker reports a KEY_INVALID from the
+    pool. ``Shell_NotifyIcon`` is thread-safe, and ``TrayIcon`` draws all its
+    icons in ``add()`` precisely so that the path from here touches no
+    lazily-built state.
     """
 
     def __init__(self) -> None:
@@ -303,9 +309,13 @@ def main() -> int:
         and report what happened (wizard step 1).
 
         Runs on the background pool, never on the driver thread: opening a
-        device blocks for as long as the device feels like. A dictation in
-        flight owns the microphone, so the probe refuses instead of fighting
-        it for the device.
+        device blocks for as long as the device feels like.
+
+        It refuses while a dictation is in flight. Not because the device is
+        exclusive — measured on this stack (MME/Realtek) a second input stream
+        opens perfectly well alongside the first — but because a probe is a
+        diagnostic, and running one through somebody's recording gives the
+        machine a second stream to reason about for no gain.
         """
         if driver.state.phase.name in _STREAM_PHASES:
             return {"ok": False, "code": "recording", "device": None,
@@ -316,6 +326,26 @@ def main() -> int:
                     "inputs": [], "level": 0}
         device = chosen_input_device()
         shown = device or (default_input_device() or {}).get("name") or names[0]
+        # The probe opens a SECOND PortAudio stream, outside the machine's
+        # phases, and a device change could otherwise unload the library from
+        # under it (audio/devices.py holds that contract now).
+        try:
+            with hold_for_probe() as claimed:
+                if not claimed:
+                    # A device reload is mid-flight (or another probe). Both
+                    # are short; «занято» with a retry button is honest.
+                    return {"ok": False, "code": "mic_busy", "device": shown,
+                            "inputs": names, "level": 0}
+                return _probe_body(device, shown, names)
+        finally:
+            # A device change that arrived while we held PortAudio deferred
+            # itself; run it now rather than leaving the list stale until the
+            # next dictation publishes.
+            driver.post_job(system_events.on_idle)
+
+    def _probe_body(
+        device: str | None, shown: str, names: list[str]
+    ) -> dict[str, Any]:
         first_frame = threading.Event()
         session = CaptureSession(device=device, on_started=first_frame.set)
         try:
@@ -470,10 +500,17 @@ def main() -> int:
     # -- power, session and device messages on the hidden window (spec §3/§5) -- #
     def reload_devices() -> None:
         # Driver thread: refresh PortAudio's frozen list and the cache the
-        # press path reads, then tell the interface. The stream is provably
-        # closed — SystemEvents gated it.
+        # press path reads, then tell the interface. The machine's stream is
+        # provably closed — SystemEvents gated it — and the lock covers the
+        # one stream that gate cannot see, the microphone probe.
         nonlocal device_names_cache
-        reload_portaudio()
+        if not reload_portaudio():
+            # Practically unreachable: the probe also raises probe_active(),
+            # which SystemEvents' gate reads, so a change during a probe
+            # defers before getting here. If it ever does happen, a stale
+            # device list beats unloading the library under a live stream.
+            log.warning("device reload skipped: the microphone probe holds PortAudio")
+            return
         device_names_cache = input_device_names()
         server.send({
             "type": "device_list_changed",
@@ -484,7 +521,11 @@ def main() -> int:
     system_events = SystemEvents(
         post_event=driver.post,
         post_job=driver.post_job,
-        stream_open=lambda: driver.state.phase.name in _STREAM_PHASES,
+        # «Is any PortAudio stream of ours open» — the machine's, or the
+        # wizard's microphone probe, which lives outside the phases entirely.
+        stream_open=lambda: (
+            driver.state.phase.name in _STREAM_PHASES or probe_active()
+        ),
         reload_devices=reload_devices,
         reinstall_hook=deps.request_hook_reinstall,
         reset_watchdog=lambda: hook_holder[0].note_probe_sent() if hook_holder else None,

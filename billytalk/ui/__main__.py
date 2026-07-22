@@ -68,7 +68,27 @@ def main(argv: list[str] | None = None) -> int:
         log.exception("could not connect to the core")
         plashka.destroy()
         return 2
-    controller.send = client.send
+
+    def send(frame: dict) -> None:
+        """Every outbound frame, with a dead core treated as an ordinary end.
+
+        ``IpcClient.send`` raises ``CoreNotRunning`` once the pipe is gone, and
+        that can happen under **any** send: the user picks Exit from the tray,
+        the core crashes, Windows ends the session. Letting it escape kills
+        this process by traceback — and a send issued before ``MainLoop`` (the
+        startup menu push and config read) escapes past the ``finally`` below,
+        so the channel and the plashka are never cleaned up either.
+
+        Dropping the frame is the right answer, not a fallback: the reader
+        thread's ``on_disconnect`` is already on its way to end the loop, and
+        a frame for a core that no longer exists has no destination.
+        """
+        try:
+            client.send(frame)
+        except Exception:
+            log.info("core gone; outbound frame dropped")  # never the payload
+
+    controller.send = send
 
     # The windows are singletons per kind: a second tray click raises the
     # living frame instead of stacking twins. wx truthiness goes False once
@@ -112,9 +132,13 @@ def main(argv: list[str] | None = None) -> int:
     controller.apply_language = apply_language
 
     def on_config(frame: dict) -> None:
-        if "error" in frame:
+        # Defensive reads, not paranoia: this callback runs on a reply from
+        # another process, at the one moment (startup) when a half-built world
+        # is likeliest, and a KeyError here dies before MainLoop exactly like
+        # the send above did.
+        config = (frame.get("result") or {}).get("config") or {}
+        if "error" in frame or not config:
             return
-        config = frame["result"]["config"]
         effective = config.get("ui_language_effective")
         if isinstance(effective, str):
             set_language(effective)

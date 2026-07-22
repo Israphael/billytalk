@@ -290,3 +290,48 @@ def test_resolve_input_falls_back_to_the_default_when_nothing_matches() -> None:
     from billytalk.core.audio.devices import resolve_input_device
 
     assert resolve_input_device(["A", "B"], ["C", "D"]) is None
+
+
+# --------------------------------------------------------------------------- #
+# the PortAudio claim (cycle-3 review, high)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_probe_holds_portaudio_and_the_reload_refuses_rather_than_unload() -> None:
+    """The wizard's microphone probe opens a second stream from a background
+    thread, outside the machine's phases. ``dlclose`` under it is a
+    use-after-free, so the reload must refuse — a stale device list costs one
+    re-plug, the alternative costs the process."""
+    from billytalk.core.audio.devices import (
+        hold_for_probe,
+        probe_active,
+        reload_portaudio,
+    )
+
+    assert probe_active() is False
+    with hold_for_probe() as claimed:
+        assert claimed is True
+        assert probe_active() is True, "the gate must see the probe and defer"
+        # No sounddevice call happens here: the refusal is decided before the
+        # import, which is what makes this test safe on any machine.
+        assert reload_portaudio(timeout=0.05) is False
+    assert probe_active() is False
+
+
+def test_two_probes_do_not_overlap() -> None:
+    from billytalk.core.audio.devices import hold_for_probe
+
+    with hold_for_probe() as first:
+        assert first is True
+        with hold_for_probe(timeout=0.05) as second:
+            assert second is False, "the second probe is told «занято», not queued"
+
+
+def test_the_claim_is_released_even_when_the_probe_raises() -> None:
+    from billytalk.core.audio.devices import hold_for_probe, probe_active
+
+    with pytest.raises(RuntimeError):
+        with hold_for_probe() as claimed:
+            assert claimed
+            raise RuntimeError("the device exploded")
+    assert probe_active() is False, "a raising probe must not wedge PortAudio"

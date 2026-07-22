@@ -333,20 +333,21 @@ class SettingsFrame(wx.Frame):
         if not 0 <= index < len(_UI_LANGUAGES):
             return
         setting = _UI_LANGUAGES[index][0]
-
-        def applied(frame: dict[str, Any]) -> None:
-            self._on_config(frame)
-            if "error" in frame:
-                return
-            # The core resolved «auto» for us — it is the side of the border
-            # that may ask Windows (harness §1). Applying it rebuilds this
-            # window, so nothing below this line may touch self.
-            effective = frame["result"]["config"].get("ui_language_effective")
-            if self._c.apply_language is not None and isinstance(effective, str):
-                self._c.apply_language(effective)
-
         self._c.request({"type": "set_config", "patch": {"ui_language": setting}},
-                        applied)
+                        self._on_language_applied)
+
+    def _on_language_applied(self, frame: dict[str, Any]) -> None:
+        # A bound method, not a closure: the controller can only recognise a
+        # reply for a destroyed window through __self__.
+        self._on_config(frame)
+        if "error" in frame:
+            return
+        # The core resolved «auto» for us — it is the side of the border
+        # that may ask Windows (harness §1). Applying it rebuilds this
+        # window, so nothing below this line may touch self.
+        effective = frame["result"]["config"].get("ui_language_effective")
+        if self._c.apply_language is not None and isinstance(effective, str):
+            self._c.apply_language(effective)
 
     def _on_autostart_toggle(self, _event: wx.CommandEvent) -> None:
         self._c.request(
@@ -355,26 +356,26 @@ class SettingsFrame(wx.Frame):
         )
 
     def _on_mic_check(self, event: wx.CommandEvent) -> None:
-        button = event.GetEventObject()
-        button.Disable()
+        self._mic_check = event.GetEventObject()
+        self._mic_check.Disable()
         self.SetStatusText(t("settings.mic.checking"))
+        self._c.request({"type": "mic_probe"}, self._on_mic_answered)
 
-        def answered(frame: dict[str, Any]) -> None:
-            button.Enable()
-            if "error" in frame:
-                self.SetStatusText(t("settings.rejected"))
-                return
-            result = frame["result"]
-            device = result.get("device") or t("common.system_default")
-            if result.get("ok"):
-                self.SetStatusText(
-                    t("wizard.mic.ok", device=device) + "  "
-                    + t("wizard.mic.level", level=result.get("level", 0))
-                )
-            else:
-                self.SetStatusText(_mic_failure_line(result.get("code")))
-
-        self._c.request({"type": "mic_probe"}, answered)
+    def _on_mic_answered(self, frame: dict[str, Any]) -> None:
+        # A bound method, not a closure — see _on_language_applied.
+        self._mic_check.Enable()
+        if "error" in frame:
+            self.SetStatusText(t("settings.rejected"))
+            return
+        result = frame["result"]
+        device = result.get("device") or t("common.system_default")
+        if result.get("ok"):
+            self.SetStatusText(
+                t("wizard.mic.ok", device=device) + "  "
+                + t("wizard.mic.level", level=result.get("level", 0))
+            )
+        else:
+            self.SetStatusText(_mic_failure_line(result.get("code")))
 
     def _on_replace_key(self, _event: wx.CommandEvent) -> None:
         from .wizard import KeyDialog
@@ -387,6 +388,14 @@ class SettingsFrame(wx.Frame):
     def _on_run_wizard(self, _event: wx.CommandEvent) -> None:
         from .wizard import WizardFrame
 
+        # One wizard at a time. Two of them share a single state seat on the
+        # controller, so a second one silently deafens the first's live test —
+        # and two windows asking the same seven questions is nonsense anyway.
+        for window in wx.GetTopLevelWindows():
+            if isinstance(window, WizardFrame) and window:
+                window.Show()
+                window.Raise()
+                return
         wizard = WizardFrame(self._c)
         wizard.Show()
         wizard.Raise()

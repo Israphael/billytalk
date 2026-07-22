@@ -654,6 +654,16 @@ class TrayIcon:
     # -- public (any thread; Shell_NotifyIcon is thread-safe) ----------- #
 
     def add(self) -> bool:
+        # Draw every state's icon up front, here on the caller's thread, so
+        # that _icon_for is afterwards a pure dict read. It was a lazy cache,
+        # and notify() reaches it from whichever thread hit the failure —
+        # a transcription worker, say — while publish() is drawing from the
+        # driver thread: two CreateIconIndirect calls for one state, one HICON
+        # dropped on the floor and leaked (remove() destroys only the survivor).
+        # Seven 32×32 icons cost microseconds once; the race costs a handle
+        # every time it happens.
+        for state in TrayState:
+            self._icon_for(state)
         self._added = self._notify(NIM_ADD, self._data()) and self._set_version()
         return self._added
 
@@ -745,6 +755,8 @@ class TrayIcon:
     # -- plumbing -------------------------------------------------------- #
 
     def _icon_for(self, state: TrayState) -> int:
+        """A pure read after :meth:`add` has filled the cache; the lazy branch
+        remains only for an icon asked for before ``add`` (tests do that)."""
         icon = self._icons.get(state)
         if icon is None:
             icon = _draw_state_icon(state, light_taskbar=self._light_taskbar)

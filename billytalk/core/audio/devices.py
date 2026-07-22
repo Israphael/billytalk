@@ -5,8 +5,13 @@ list simply does not contain it. The measured fix (42 ms) is a full library
 reload — terminate, ``dlclose``, ``dlopen``, initialise. The spike also showed
 the reload *surviving* under a live stream, and research/07 is explicit that
 surviving once is not the same as being correct: the library is unloaded from
-under a running callback. **Never reload with a stream open.** The driver owns
-that discipline; this module just performs the steps.
+under a running callback. **Never reload with a stream open.** The machine's
+phase used to stand for «a stream is open» — true while the machine owned the
+only stream. Cycle 3's microphone probe (wizard step 1) opens a second one,
+from a background thread, outside the phases entirely, so the discipline now
+lives **here**, next to the dangerous call: :func:`hold_for_probe` claims the
+library, :func:`probe_active` lets the caller's gate defer instead of racing,
+and :func:`reload_portaudio` refuses rather than unload under a live stream.
 
 Ranking (spec §5, «ранжированный список с автопадением»): the user's ordered
 preferences are matched against what is actually present; the first available
@@ -16,14 +21,51 @@ function of two name lists, so the whole policy tests without PortAudio.
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 __all__ = [
     "default_input_device",
+    "hold_for_probe",
     "input_device_names",
+    "probe_active",
     "resolve_input_device",
     "reload_portaudio",
 ]
+
+_lock = threading.Lock()
+_probe_open = threading.Event()
+
+
+def probe_active() -> bool:
+    """Is a diagnostic probe holding a PortAudio stream right now?
+
+    Read by the core's stream gate, so a device change arriving during a probe
+    **defers** — exactly as one arriving mid-recording does — instead of
+    racing the lock below.
+    """
+    return _probe_open.is_set()
+
+
+@contextmanager
+def hold_for_probe(*, timeout: float = 0.5) -> Iterator[bool]:
+    """Claim PortAudio for a probe. Yields whether the claim succeeded.
+
+    False means a reload (or another probe) holds it. Both are short, and the
+    caller answers «занято» rather than parking a background thread somebody
+    is watching a spinner for.
+    """
+    if not _lock.acquire(timeout=timeout):
+        yield False
+        return
+    _probe_open.set()
+    try:
+        yield True
+    finally:
+        _probe_open.clear()
+        _lock.release()
 
 
 def default_input_device() -> dict[str, Any] | None:
@@ -75,27 +117,39 @@ def resolve_input_device(
     return None
 
 
-def reload_portaudio() -> None:
+def reload_portaudio(*, timeout: float = 2.0) -> bool:
     """Refresh the frozen device list. Measured at 42 ms (research/07 S3).
 
+    Returns whether it ran. ``False`` means a probe holds the library and the
+    reload was refused: a stale device list costs the user one re-plug, while
+    unloading the library under a live stream costs them the process.
+
     The caller gates on the **capture** stream being closed (machine phase),
-    but a fire-and-forget **cue** (``play_cue`` → ``sd.play``) is a second
-    PortAudio output stream that can be live in Finalizing/Delivering/Idle —
-    exactly when a deferred reload fires. Unloading the library from under a
-    playing cue is the use-after-free S3 warned "surviving once is not being
-    correct" about (cue-review, veha 3). So the reload honours its own
-    precondition itself: ``sd.stop()`` closes any playing stream through the
-    still-loaded library first (a no-op when nothing plays; at worst it clips
-    a stop/clipboard cue — cheap against a crash). ``_terminate`` still cannot
-    run while the capture stream is open; that stays the caller's contract.
+    but two other streams exist that the phase cannot see, and both are
+    handled here rather than trusted to the caller:
+
+    * a fire-and-forget **cue** (``play_cue`` → ``sd.play``) is a PortAudio
+      output stream that can be live in Finalizing/Delivering/Idle — exactly
+      when a deferred reload fires (cue-review, veha 3). ``sd.stop()`` closes
+      it through the still-loaded library first: a no-op when nothing plays,
+      at worst a clipped cue, cheap against a crash;
+    * the wizard's **microphone probe** opens an input stream from a
+      background thread. It holds :func:`hold_for_probe`, and this lock is the
+      other half of that handshake.
 
     ``sounddevice`` has no public reload API, so the private names are pinned
     by the test suite instead of an upstream promise.
     """
-    import sounddevice as sd
+    if not _lock.acquire(timeout=timeout):
+        return False
+    try:
+        import sounddevice as sd
 
-    sd.stop()
-    sd._terminate()
-    sd._ffi.dlclose(sd._lib)
-    sd._lib = sd._ffi.dlopen(sd._libname)
-    sd._initialize()
+        sd.stop()
+        sd._terminate()
+        sd._ffi.dlclose(sd._lib)
+        sd._lib = sd._ffi.dlopen(sd._libname)
+        sd._initialize()
+        return True
+    finally:
+        _lock.release()

@@ -124,32 +124,37 @@ class _KeyForm(wx.Panel):
             return
         self._save.Disable()
         _relabel(self.status, t("wizard.key.checking"))
+        self._c.request({"type": "set_key", "key": key}, self._on_stored)
 
-        def stored(frame: dict[str, Any]) -> None:
-            if "error" in frame:
-                self._save.Enable()
-                _relabel(self.status, t("wizard.key.failed"))
-                return
-            # Clear the field the moment the core owns the key: nothing is
-            # served by leaving it on screen.
-            self._field.SetValue("")
-            self._c.request({"type": "test_key"}, checked)
+    # Bound methods, not closures: ``UiController`` drops a reply whose
+    # callback belongs to a destroyed wx window, and it recognises that only
+    # through ``__self__``. A closure has none, so a ``test_key`` answer —
+    # a network round trip, up to the pool's 30 s — landing after the user
+    # closed the dialog would touch deleted controls.
 
-        def checked(frame: dict[str, Any]) -> None:
+    def _on_stored(self, frame: dict[str, Any]) -> None:
+        if "error" in frame:
             self._save.Enable()
-            if "error" in frame:
-                _relabel(self.status, t("wizard.key.network"))
-                return
-            status = frame["result"].get("status")
-            self.accepted = status in ("ok", "network")
-            _relabel(self.status, {
-                "ok": t("wizard.key.ok"),
-                "invalid": t("wizard.key.invalid"),
-                "network": t("wizard.key.network"),
-                "no_key": t("wizard.key.empty"),
-            }.get(str(status), t("wizard.key.network")))
+            _relabel(self.status, t("wizard.key.failed"))
+            return
+        # Clear the field the moment the core owns the key: nothing is
+        # served by leaving it on screen.
+        self._field.SetValue("")
+        self._c.request({"type": "test_key"}, self._on_checked)
 
-        self._c.request({"type": "set_key", "key": key}, stored)
+    def _on_checked(self, frame: dict[str, Any]) -> None:
+        self._save.Enable()
+        if "error" in frame:
+            _relabel(self.status, t("wizard.key.network"))
+            return
+        status = frame["result"].get("status")
+        self.accepted = status in ("ok", "network")
+        _relabel(self.status, {
+            "ok": t("wizard.key.ok"),
+            "invalid": t("wizard.key.invalid"),
+            "network": t("wizard.key.network"),
+            "no_key": t("wizard.key.empty"),
+        }.get(str(status), t("wizard.key.network")))
 
 
 class KeyDialog(wx.Dialog):
@@ -157,9 +162,9 @@ class KeyDialog(wx.Dialog):
 
     def __init__(self, controller: UiController, parent: wx.Window | None = None) -> None:
         super().__init__(parent, title=t("wizard.key.title"))
-        form = _KeyForm(self, controller)
+        self.form = _KeyForm(self, controller)
         sizer = wx.BoxSizer(wx.VERTICAL)
-        sizer.Add(form, 1, wx.EXPAND | wx.ALL, 14)
+        sizer.Add(self.form, 1, wx.EXPAND | wx.ALL, 14)
         close = wx.Button(self, wx.ID_CANCEL, label=t("common.close"))
         sizer.Add(close, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
         self.SetSizerAndFit(sizer)
@@ -180,6 +185,7 @@ class WizardFrame(wx.Frame):
         # does not repeat a microphone test to read the same page in Russian.
         self.state: dict[str, Any] = dict(state or {})
         self._test_since_ms = 0
+        self._state_seat: Any = None
 
         root = wx.Panel(self)
         outer = wx.BoxSizer(wx.VERTICAL)
@@ -277,9 +283,15 @@ class WizardFrame(wx.Frame):
         «wrapped C/C++ object deleted» the M2 review found in the reply table —
         and the language switch destroys this window on purpose, so the wires
         have to be cut before the twin exists, not after.
+
+        The seat is given up **only if it is still ours**. There is one seat
+        and there can be two wizards (the first run's, and one opened from
+        «Настройки → Пройти заново»): a blind ``= None`` from the one being
+        closed would deafen the one standing on its live-test step.
         """
         self._timer.Stop()
-        self._c.on_state = None
+        if self._c.on_state is self._state_seat:
+            self._c.on_state = None
 
     def _on_close(self, event: wx.CloseEvent) -> None:
         self._release_test()
@@ -308,29 +320,27 @@ class WizardFrame(wx.Frame):
     def _on_ui_language(self, event: wx.CommandEvent) -> None:
         choice = event.GetEventObject()
         code = "ru" if choice.GetSelection() == 0 else "en"
-
-        def applied(frame: dict[str, Any]) -> None:
-            if "error" in frame:
-                return
-            effective = frame["result"]["config"].get("ui_language_effective", code)
-            if self._c.apply_language is not None:
-                self._c.apply_language(effective)  # menu and the other windows
-            # Order matters: release the live wires BEFORE the twin exists, or
-            # the twin's own seat (taken in its __init__, when it walks to the
-            # same step) is the one this window would clear.
-            self._release_test()
-            # This window is rebuilt rather than relabelled — same reason as
-            # the settings window, and the step and answers ride along.
-            twin = WizardFrame(
-                self._c, start_step=self._step, state=self.state
-            )
-            twin.Show()
-            twin.Raise()
-            self.Destroy()
-
         self._c.request(
-            {"type": "set_config", "patch": {"ui_language": code}}, applied
+            {"type": "set_config", "patch": {"ui_language": code}},
+            self._on_language_applied,
         )
+
+    def _on_language_applied(self, frame: dict[str, Any]) -> None:
+        if "error" in frame:
+            return
+        effective = frame["result"]["config"].get("ui_language_effective", "ru")
+        if self._c.apply_language is not None:
+            self._c.apply_language(effective)  # menu and the other windows
+        # Order matters: release the live wires BEFORE the twin exists, or
+        # the twin's own seat (taken in its __init__, when it walks to the
+        # same step) is the one this window would clear.
+        self._release_test()
+        # This window is rebuilt rather than relabelled — same reason as
+        # the settings window, and the step and answers ride along.
+        twin = WizardFrame(self._c, start_step=self._step, state=self.state)
+        twin.Show()
+        twin.Raise()
+        self.Destroy()
 
     # ------------------------------------------------------------------ #
     # pages
@@ -451,22 +461,21 @@ class WizardFrame(wx.Frame):
     def _on_mic_check(self, _event: wx.CommandEvent) -> None:
         self._mic_button.Disable()
         _relabel(self._mic_status, t("settings.mic.checking"))
+        self._c.request({"type": "mic_probe"}, self._on_mic_answered)
 
-        def answered(frame: dict[str, Any]) -> None:
-            self._mic_button.Enable()
-            if "error" in frame:
-                _relabel(self._mic_status, t("wizard.mic.busy"))
-                return
-            result = frame["result"]
-            line = mic_line(result)
-            self.state["mic_line"] = line
-            self.state["mic_denied"] = result.get("code") == "mic_denied"
-            _relabel(self._mic_status, line)
-            # The privacy-settings button appears only where it is the answer.
-            self._mic_settings.Show(bool(self.state["mic_denied"]))
-            self.Layout()
-
-        self._c.request({"type": "mic_probe"}, answered)
+    def _on_mic_answered(self, frame: dict[str, Any]) -> None:
+        self._mic_button.Enable()
+        if "error" in frame:
+            _relabel(self._mic_status, t("wizard.mic.busy"))
+            return
+        result = frame["result"]
+        line = mic_line(result)
+        self.state["mic_line"] = line
+        self.state["mic_denied"] = result.get("code") == "mic_denied"
+        _relabel(self._mic_status, line)
+        # The privacy-settings button appears only where it is the answer.
+        self._mic_settings.Show(bool(self.state["mic_denied"]))
+        self.Layout()
 
     def _on_capture(self, _event: wx.CommandEvent) -> None:
         dialog = HotkeyCaptureDialog(self._c, self)
@@ -496,8 +505,10 @@ class WizardFrame(wx.Frame):
         self._test_since_ms = int(time.time() * 1000)
         self._c.request({"type": "autostart_get"}, self._on_autostart_state)
         # A dictation that ended is the signal; the timer only covers a missed
-        # push (see _POLL_MS).
-        self._c.on_state = lambda _state: self._poll_test()
+        # push (see _POLL_MS). The lambda is kept so _release_test can tell
+        # our seat from another wizard's.
+        self._state_seat = lambda _state: self._poll_test()
+        self._c.on_state = self._state_seat
         self._timer.Start(_POLL_MS)
         self._poll_test()
 
@@ -523,8 +534,7 @@ class WizardFrame(wx.Frame):
         if not text:
             return
         self.state["tested"] = True
-        self._timer.Stop()
-        self._c.on_state = None
+        self._release_test()  # the test is proven; stop watching
         _relabel(self._test_status, t("wizard.test.got", text=text[:200]))
         self.Layout()
 
