@@ -250,8 +250,7 @@ class WizardFrame(wx.Frame):
         if last:
             self._enter_test()
         else:
-            self._timer.Stop()
-            self._c.on_state = None
+            self._release_test()
 
     def _on_next(self, _event: wx.CommandEvent) -> None:
         if self._step < STEP_COUNT - 1:
@@ -269,10 +268,21 @@ class WizardFrame(wx.Frame):
         wx.MessageBox(message, t("wizard.done.title"), wx.OK | wx.ICON_INFORMATION, self)
         self.Close()
 
-    def _on_close(self, event: wx.CloseEvent) -> None:
+    def _release_test(self) -> None:
+        """Give up the live test's two live wires: the timer and the
+        controller's state seat.
+
+        Both point at *this* window. A timer that fires into a destroyed frame
+        and a state push that calls a dead frame's method are the same
+        «wrapped C/C++ object deleted» the M2 review found in the reply table —
+        and the language switch destroys this window on purpose, so the wires
+        have to be cut before the twin exists, not after.
+        """
         self._timer.Stop()
-        if self._c.on_state is not None:
-            self._c.on_state = None
+        self._c.on_state = None
+
+    def _on_close(self, event: wx.CloseEvent) -> None:
+        self._release_test()
         event.Skip()
 
     # ------------------------------------------------------------------ #
@@ -305,6 +315,10 @@ class WizardFrame(wx.Frame):
             effective = frame["result"]["config"].get("ui_language_effective", code)
             if self._c.apply_language is not None:
                 self._c.apply_language(effective)  # menu and the other windows
+            # Order matters: release the live wires BEFORE the twin exists, or
+            # the twin's own seat (taken in its __init__, when it walks to the
+            # same step) is the one this window would clear.
+            self._release_test()
             # This window is rebuilt rather than relabelled — same reason as
             # the settings window, and the step and answers ride along.
             twin = WizardFrame(

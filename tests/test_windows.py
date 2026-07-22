@@ -482,3 +482,41 @@ def test_wizard_autostart_checkbox_speaks_to_the_core(wx_app) -> None:
         assert sent["enabled"] is True
     finally:
         frame.Destroy()
+
+
+def test_wizard_language_switch_on_the_last_step_hands_the_seat_to_the_twin(
+    wx_app,
+) -> None:
+    """The language switch destroys this window and builds a twin. If the old
+    frame released the state seat AFTER the twin took it, the live test would
+    be deaf; if it never released it, a state push would call a destroyed
+    frame's method («wrapped C/C++ object deleted»)."""
+    frame, controller = _wizard({
+        "set_config": _WIZARD_CONFIG,
+    })
+    applied: list[str] = []
+    controller.apply_language = applied.append
+    try:
+        frame._go(6)
+        seat_before = controller.on_state
+        assert seat_before is not None
+        frame._language.SetSelection(1)  # English
+
+        event = wx.CommandEvent(wx.EVT_CHOICE.typeId, frame._language.GetId())
+        event.SetEventObject(frame._language)
+        frame._on_ui_language(event)
+        wx.Yield()
+
+        assert applied == ["ru"], "the menu and the other windows are told once"
+        assert controller.on_state is not None, "the twin holds the seat"
+        assert controller.on_state is not seat_before, "and it is not the old one"
+        patch = next(
+            m for m in controller.sent
+            if m["type"] == "set_config" and "ui_language" in m.get("patch", {})
+        )
+        assert patch["patch"] == {"ui_language": "en"}
+    finally:
+        for window in list(wx.GetTopLevelWindows()):
+            if window and window.GetTitle().startswith("BillyTalk"):
+                window.Destroy()
+        wx.Yield()
