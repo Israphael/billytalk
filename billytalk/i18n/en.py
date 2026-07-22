@@ -131,7 +131,7 @@ STRINGS: Final[dict[str, str]] = {
     "settings.rule.dialog": "Dictionary rule",
     "settings.rule.heard_field": "Heard as (variants separated by |)",
     "settings.rule.enabled_field": "Enabled",
-    "settings.rule.incomplete": "Fill in «Heard as» and «Written as».",
+    "settings.rule.incomplete": "Fill in “Heard as” and “Written as”.",
     "settings.rule.type.normalize": "spelling",
     "settings.rule.type.replace": "replacement",
 
@@ -258,19 +258,19 @@ STRINGS: Final[dict[str, str]] = {
         "A side mouse button works best: it sits under your thumb and almost no program "
         "needs it.",
 
-    "wizard.driver.title": "«Back» on the side button",
+    "wizard.driver.title": "“Back” on the side button",
     "wizard.driver.body":
-        "The side button usually means «Back». While BillyTalk runs it suppresses that "
+        "The side button usually means “Back”. While BillyTalk runs it suppresses that "
         "— but there is no suppression if the program crashed, if an elevated window is "
         "in front, or during the brief gap while the hook is reinstalled.",
     "wizard.driver.why":
-        "What that means in practice: the browser can go «Back» and lose a filled-in "
-        "form. Unbind «Back» from the button in your mouse software (Razer Synapse, "
+        "What that means in practice: the browser can go “Back” and lose a filled-in "
+        "form. Unbind “Back” from the button in your mouse software (Razer Synapse, "
         "Logitech G HUB, Bloody, Mouse Properties) and any such glitch becomes harmless.",
     "wizard.driver.how":
         "How: open the mouse software → profile → button assignments → set the side "
-        "button to «No action» or «Mouse button 4».",
-    "wizard.driver.done": "«Back» is unbound",
+        "button to “No action” or “Mouse button 4”.",
+    "wizard.driver.done": "“Back” is unbound",
     "wizard.driver.optional": "This step is optional — you can leave things as they are.",
 
     "wizard.stt.title": "Transcription",
@@ -305,10 +305,10 @@ STRINGS: Final[dict[str, str]] = {
         "Open any text field — Notepad, a chat, a search box. Hold {key}, say a "
         "sentence, release.",
     "wizard.test.waiting": "Waiting for your first dictation…",
-    "wizard.test.got": "Done. Last dictation: «{text}»",
+    "wizard.test.got": "Done. Last dictation: “{text}”",
     "wizard.test.status": "State: {status}",
     "wizard.test.tray":
-        "Tip: pin the icon next to the clock — click «^» by the tray and drag the "
+        "Tip: pin the icon next to the clock — click “^” by the tray and drag the "
         "BillyTalk icon out. The icon shows recording, transcription and the queue.",
     "wizard.test.autostart": "Start BillyTalk when I sign in to Windows",
 
