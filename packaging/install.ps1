@@ -43,6 +43,15 @@ $quotedExe = '"' + $destExe + '"'
 New-ItemProperty -Path $runKey -Name "BillyTalk" -Value $quotedExe -PropertyType String -Force | Out-Null
 Write-Host "  autostart: HKCU\...\Run\BillyTalk" -ForegroundColor DarkGray
 
+# A StartupApproved entry left by a previous install (or by the user turning
+# the app off in Settings > Apps > Startup) would silently veto the value we
+# just wrote - the app would be "installed with autostart" and never start.
+# Installing is an explicit request, so the stale veto goes.
+$approvedKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
+if (Test-Path $approvedKey) {
+    Remove-ItemProperty -Path $approvedKey -Name "BillyTalk" -ErrorAction SilentlyContinue
+}
+
 # --- Windows Error Reporting exclusion (spec section 13) ----------------------
 # Without this a full crash dump (audio buffer, transcript, key) could reach
 # %LOCALAPPDATA%\CrashDumps and possibly Microsoft.
@@ -52,20 +61,40 @@ New-ItemProperty -Path $werKey -Name $exeName -Value 1 -PropertyType DWord -Forc
 Write-Host "  WER exclusion: $exeName" -ForegroundColor DarkGray
 
 # --- Start-menu shortcut ------------------------------------------------------
+# Not decoration: spec section 11 notes that notifications need a Start-menu
+# shortcut to exist at all. The icon comes from the exe itself (PyInstaller
+# embedded packaging\billytalk.ico), so the shortcut inherits it.
 $startMenu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
 $lnk = Join-Path $startMenu "BillyTalk.lnk"
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($lnk)
 $shortcut.TargetPath = $destExe
 $shortcut.WorkingDirectory = $dest
+$shortcut.IconLocation = "$destExe,0"
 $shortcut.Description = "BillyTalk - voice dictation"
 $shortcut.Save()
 Write-Host "  shortcut: Start Menu \ BillyTalk" -ForegroundColor DarkGray
+
+# --- uninstall entry (Settings > Apps, currentUser hive) ----------------------
+# So the app can be removed the way every other program is, instead of by
+# knowing that uninstall.ps1 exists.
+$uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\BillyTalk"
+$uninstallCmd = "powershell.exe -ExecutionPolicy Bypass -File `"$dest\uninstall.ps1`""
+New-Item -Path $uninstallKey -Force | Out-Null
+New-ItemProperty -Path $uninstallKey -Name "DisplayName" -Value "BillyTalk" -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $uninstallKey -Name "DisplayIcon" -Value $destExe -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $uninstallKey -Name "InstallLocation" -Value $dest -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $uninstallKey -Name "Publisher" -Value "BillyTalk" -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $uninstallKey -Name "NoModify" -Value 1 -PropertyType DWord -Force | Out-Null
+New-ItemProperty -Path $uninstallKey -Name "NoRepair" -Value 1 -PropertyType DWord -Force | Out-Null
+New-ItemProperty -Path $uninstallKey -Name "UninstallString" -Value $uninstallCmd -PropertyType String -Force | Out-Null
+Copy-Item -Force (Join-Path $PSScriptRoot "uninstall.ps1") $dest
+Write-Host "  uninstall entry: Settings > Apps > Installed apps" -ForegroundColor DarkGray
 
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green
 Write-Host "Run now: $destExe"
 Write-Host "(or the BillyTalk shortcut in the Start menu; it also auto-starts on login)."
 Write-Host "The core starts into the tray - look for the mic icon near the clock."
-Write-Host "The Groq key is read from the Credential Manager (BillyTalk/groq-api-key)."
-Write-Host "Uninstall: powershell -ExecutionPolicy Bypass -File uninstall.ps1"
+Write-Host "On the first run it opens the setup wizard: microphone, button, Groq key, live test."
+Write-Host "Uninstall: Settings > Apps, or run uninstall.ps1 from $dest"

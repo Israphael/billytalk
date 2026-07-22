@@ -29,7 +29,8 @@ a = Analysis(
     ["billytalk/__main__.py"],
     pathex=[],
     binaries=[],
-    datas=[],
+    # The window icon: ui/windows/app_icon() reads it from sys._MEIPASS.
+    datas=[("packaging/billytalk.ico", ".")],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -57,6 +58,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon="packaging/billytalk.ico",
 )
 
 coll = COLLECT(

@@ -14,20 +14,47 @@ PyPI before cycle 3.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import wx
 
 from .. import chrome
 
-__all__ = ["dress"]
+__all__ = ["dress", "app_icon"]
 
 _DARK_BG = wx.Colour(32, 32, 32)      # the mockup's --bg
 _DARK_INPUT = wx.Colour(36, 36, 36)   # --in
 _DARK_FG = wx.Colour(255, 255, 255)
 
 
+def app_icon() -> wx.Icon | None:
+    """The window icon — Alt+Tab, the taskbar button, the title bar.
+
+    The file is bundled next to the frozen executable (``billytalk.spec``'s
+    ``datas``) and lives in ``packaging/`` in a dev checkout. Missing is not an
+    error: an iconless window is ugly, a window that refuses to open because it
+    could not find a picture is broken.
+    """
+    root = Path(getattr(sys, "_MEIPASS", "")) if getattr(sys, "frozen", False) else None
+    candidates = (
+        [root / "billytalk.ico"] if root
+        else [Path(__file__).resolve().parents[3] / "packaging" / "billytalk.ico"]
+    )
+    for path in candidates:
+        if path.is_file():
+            icon = wx.Icon(str(path), wx.BITMAP_TYPE_ICO)
+            if icon.IsOk():
+                return icon
+    return None
+
+
 def dress(frame: wx.Frame) -> bool:
     """Apply the §05 branch points to a fully built window; returns whether
     the system is dark so callers can tune their own painting."""
+    icon = app_icon()
+    if icon is not None and isinstance(frame, wx.TopLevelWindow):
+        frame.SetIcon(icon)
     build = chrome.windows_build()
     dark = chrome.system_is_dark()
     face = chrome.resolve_face(
