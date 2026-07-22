@@ -7,16 +7,36 @@
 
 ```
 cd C:\BillyTalk
-.venv\Scripts\python.exe packaging\make_icon.py          # только если менялся генератор иконки
+.venv\Scripts\python.exe packaging\make_icon.py            # только если менялся генератор
+.venv\Scripts\python.exe packaging\make_installer_art.py   # только если менялся генератор
 .venv\Scripts\python.exe -m PyInstaller billytalk.spec --noconfirm
+"C:\Program Files (x86)\NSIS\makensis.exe" packaging\installer.nsi
 ```
 
-Результат — `dist\BillyTalk\BillyTalk.exe` (+ его `_internal\`). Бандл ~82 МБ,
+Третий шаг делает бандл, четвёртый — `dist\BillyTalk-Setup.exe` (~25 МБ), то
+самое, что отдаётся человеку. NSIS ставится один раз: `winget install NSIS.NSIS`.
+
+Промежуточный результат — `dist\BillyTalk\BillyTalk.exe` (+ его `_internal\`). Бандл ~82 МБ,
 в git не попадает (`build/`, `dist/` в `.gitignore`). Иконка
 `packaging/billytalk.ico` **в git есть** — она генерируется скриптом, и тест
 `tests/test_icon.py` сверяет файл с генератором, чтобы они не разъехались.
 
-## Установить (currentUser, без прав администратора)
+## Установить
+
+**Обычный путь — `BillyTalk-Setup.exe`.** Двойной клик: приветствие → папка →
+установка → «Запустить BillyTalk». Без прав администратора, только для текущего
+пользователя (спека §12: повышенный процесс не сможет вставлять текст в обычные
+приложения, поэтому установщик и просит обычные права).
+
+Удаление — «Параметры → Приложения → BillyTalk». Установщик спросит, стирать ли
+историю, аудио и настройки; **по умолчанию — нет**, чтобы переустановка не
+стоила человеку его слов. Ключ Groq в диспетчере учётных данных не трогается
+никогда. Тихое удаление (`uninstall.exe /S`) не спрашивает и не стирает.
+
+### Путь для разработки: `install.ps1`
+
+Тот же результат без NSIS — полезно, когда пересобрал бандл и хочешь проверить
+установку, не пересобирая установщик:
 
 ```
 powershell -ExecutionPolicy Bypass -File packaging\install.ps1
